@@ -1,4 +1,4 @@
-// Command jobs serves the public job API. So far: health endpoints only.
+// Command jobs serves the public job API (see internal/jobsapi) and health endpoints.
 package main
 
 import (
@@ -12,6 +12,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aniruddha81/task-queue/internal/authn"
+	"github.com/aniruddha81/task-queue/internal/jobsapi"
+	"github.com/aniruddha81/task-queue/internal/queue"
 )
 
 func main() {
@@ -25,8 +29,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+	// Fail closed: no key, no service. Locally, compose passes the dev key's public half.
+	auth, err := authn.NewVerifier(os.Getenv("JWT_PUBLIC_KEY"))
+	if err != nil {
+		log.Error("JWT_PUBLIC_KEY", "err", err)
+		os.Exit(1)
+	}
 
 	mux := http.NewServeMux()
+	mux.Handle("/v1/", jobsapi.New(queue.NewStore(pool), auth, log))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {}) // process is alive
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {    // can serve traffic
 		if err := pool.Ping(r.Context()); err != nil {

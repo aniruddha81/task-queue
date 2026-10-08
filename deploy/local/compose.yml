@@ -32,7 +32,10 @@ services:
 
   jobs:
     build: { context: ../.., args: { CMD: jobs } }
-    environment: { DATABASE_URL: *db-url }
+    environment:
+      DATABASE_URL: *db-url
+      # Public half of the dev-only key (go run ./cmd/devtoken -pubkey). Never use in the cloud.
+      JWT_PUBLIC_KEY: tRGjV0WSLFdGjYN3g/DC+luzVJ50Z69aX/kR5B0TpLo=
     ports: ["8080:8080"]
     depends_on:
       migrate: { condition: service_completed_successfully }

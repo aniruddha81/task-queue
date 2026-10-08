@@ -2,30 +2,28 @@ package migrations
 
 import (
 	"database/sql"
-	"fmt"
 	"io/fs"
-	"os"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/aniruddha81/task-queue/internal/pgtest"
 )
 
 // TestUpDownUp applies every database's migrations, rolls them all back, and applies them
 // again, in a throwaway database so it never touches dev data.
 func TestUpDownUp(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("set TEST_DATABASE_URL to a PostgreSQL 18 server to run")
-	}
 	dirs, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, dir := range dirs {
 		t.Run(dir.Name(), func(t *testing.T) {
-			db := freshDB(t, url)
+			db, err := sql.Open("pgx", pgtest.New(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
 			p, err := Provider(db, dir.Name())
 			if err != nil {
 				t.Fatal(err)
@@ -41,24 +39,4 @@ func TestUpDownUp(t *testing.T) {
 			}
 		})
 	}
-}
-
-func freshDB(t *testing.T, url string) *sql.DB {
-	cfg, err := pgx.ParseConfig(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	admin := stdlib.OpenDB(*cfg)
-	t.Cleanup(func() { admin.Close() })
-	name := fmt.Sprintf("test_%d", time.Now().UnixNano())
-	if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
-		t.Fatal(err)
-	}
-	cfg.Database = name
-	db := stdlib.OpenDB(*cfg)
-	t.Cleanup(func() {
-		db.Close()
-		admin.Exec("DROP DATABASE " + name + " WITH (FORCE)")
-	})
-	return db
 }

@@ -4,7 +4,7 @@ A distributed job scheduler in Go, running across AWS and Azure. It never loses 
 
 It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
 
-> **Status:** early. The local stack, the database schema and the worker API contract are in place. Submitting and running jobs is not built yet.
+> **Status:** early. Jobs can be submitted, read, listed and cancelled through the API. Nothing runs them yet: workers and dispatch come next.
 
 ## Use cases
 
@@ -43,6 +43,29 @@ This starts PostgreSQL 18, applies the migrations, and starts the `jobs` service
 curl localhost:8080/healthz   # the process is alive
 curl localhost:8080/readyz    # it can reach the database
 ```
+
+### Try the API
+
+Tokens are signed with a development key until the `auth` service exists. This prints one for a demo user:
+
+```sh
+TOKEN=$(go run ./cmd/devtoken)
+
+# Submit. The Idempotency-Key makes retries safe: repeating it returns the same job.
+curl -X POST localhost:8080/v1/jobs -H "Authorization: Bearer $TOKEN"   -H "Idempotency-Key: order-42"   -d '{"queue":"default","type":"email.send","payload":{"to":"a@example.com"}}'
+
+curl localhost:8080/v1/jobs -H "Authorization: Bearer $TOKEN"                      # list, newest first
+curl localhost:8080/v1/jobs/<id> -H "Authorization: Bearer $TOKEN"                 # get
+curl -X POST localhost:8080/v1/jobs/<id>/cancel -H "Authorization: Bearer $TOKEN"  # cancel
+```
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Job created |
+| `200` | A repeat of an earlier submit: the original job is returned |
+| `409` | That key was already used with a different request |
+| `404` | No such job, or it belongs to someone else |
+| `503` | The outcome is unknown; retry with the same key |
 
 Stop and remove everything, including the database volume:
 
@@ -89,7 +112,12 @@ git release
 ## Layout
 
 ```text
-cmd/jobs/         public job API (health endpoints so far)
+cmd/jobs/         public job API service
+cmd/devtoken/     prints a dev-only JWT for curl
+internal/queue/   jobs database: submit, get, list, cancel
+internal/jobsapi/ REST handlers and input validation
+internal/authn/   JWT verification (EdDSA only)
+internal/pgtest/  throwaway databases for tests
 cmd/migrate/      one-shot migration runner: migrate <database>
 migrations/       SQL migrations, one folder per database
 proto/            worker API (Protobuf)
