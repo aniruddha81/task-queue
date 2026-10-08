@@ -7,7 +7,6 @@ services:
     volumes: ["/etc/tq/certs:/certs:ro"]
     environment:
       TLS_DIR: /certs
-      ADDR: ":9999" # DELIBERATELY BROKEN: readiness is checked on 8080, so this release must roll back
       VERSION: ${VERSION}
       DATABASE_URL: ${JOBS_DB_URL}
       JWKS_URL: ${AUTH_URL}/.well-known/jwks.json
