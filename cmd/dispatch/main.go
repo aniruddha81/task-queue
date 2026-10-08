@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/aniruddha81/task-queue/gen/taskqueue/worker/v1/workerv1connect"
@@ -37,6 +38,7 @@ func main() {
 	defer pool.Close()
 
 	srv := dispatch.New(queue.NewStore(pool), log)
+	prometheus.MustRegister(dispatch.QueueDepth(pool))
 	go srv.Listen(ctx, pool)
 
 	mux := http.NewServeMux()

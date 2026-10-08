@@ -27,6 +27,7 @@ type Claimed struct {
 	LeaseToken      uuid.UUID `db:"lease_token"`
 	LeaseSeconds    float64   `db:"lease_seconds"`
 	DeadlineSeconds float64   `db:"deadline_seconds"`
+	WaitSeconds     float64   `db:"wait_seconds"` // from run_at to this claim
 }
 
 // EffectKey identifies the job's effect across retries and resubmissions (G4).
@@ -70,7 +71,8 @@ func (s *Store) Claim(ctx context.Context, p ClaimParams) ([]Claimed, error) {
 		)
 		SELECT id, owner_id, idempotency_key, queue, type, payload, attempt, lease_token,
 		       EXTRACT(EPOCH FROM lease_expires_at - now())::float8 AS lease_seconds,
-		       EXTRACT(EPOCH FROM deadline_at - now())::float8      AS deadline_seconds
+		       EXTRACT(EPOCH FROM deadline_at - now())::float8      AS deadline_seconds,
+		       EXTRACT(EPOCH FROM now() - run_at)::float8           AS wait_seconds
 		FROM claimed`,
 		p.Queues, p.Types, p.Cloud, p.StealAfter, p.Max, p.Node, p.Lease)
 	return pgx.CollectRows(rows, pgx.RowToStructByName[Claimed])

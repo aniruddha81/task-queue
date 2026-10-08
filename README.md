@@ -4,7 +4,7 @@ A distributed job scheduler in Go, running across AWS and Azure. It never loses 
 
 It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
 
-> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. The dashboard comes next.
+> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live. Automatic database failover comes next.
 
 ## Use cases
 
@@ -39,6 +39,12 @@ docker compose -f deploy/local/compose.yml up --build
 ```
 
 This starts PostgreSQL 18 (TLS only, one role per service), `auth`, `jobs`, `dispatch`, two `scheduler`s (one elected leader runs the lease reaper and cron), a `worker`, and the `gateway`. The gateway at **https://localhost:8443** is the only public port; every internal call uses mTLS.
+
+### Dashboard and metrics
+
+- **Dashboard:** https://localhost:8443 (sign in as `demo@example.com` / `demo-password-1`). Jobs with filters, each job's attempt history (including late results rejected by fencing), dead letters with redrive, queues, workers per cloud, schedules, and the current leader's epoch. It refreshes every 2 seconds.
+- **Grafana:** http://localhost:3000. Claims per second, queue depth, submit-to-start latency (p50/p95/p99), lease expiries, retries and fenced results, leader epoch.
+- **Prometheus:** http://localhost:9090. It scrapes dispatch and both schedulers over mTLS.
 
 ### Try the API
 
@@ -165,7 +171,7 @@ migrations/       SQL migrations, one folder per database
 proto/            worker API (Protobuf)
 gen/              Go code generated from proto/ (do not edit)
 deploy/local/     Docker Compose for local development
-web/              Next.js dashboard (static export; skeleton so far)
+web/              Next.js dashboard (static export, served by the gateway)
 docs/results/     measurements and checks (e.g. cloud accounts)
 ```
 

@@ -31,7 +31,36 @@ var (
 	claimed  = promauto.NewCounter(prometheus.CounterOpts{Name: "dispatch_jobs_claimed_total", Help: "Jobs handed to workers."})
 	results  = promauto.NewCounterVec(prometheus.CounterOpts{Name: "dispatch_results_total", Help: "Complete and Fail calls by outcome."}, []string{"call", "outcome"})
 	lostSeen = promauto.NewCounter(prometheus.CounterOpts{Name: "dispatch_heartbeat_leases_lost_total", Help: "Heartbeats for leases that were no longer held."})
+	waited   = promauto.NewHistogramVec(prometheus.HistogramOpts{Name: "dispatch_job_wait_seconds",
+		Help:    "Time from a job's run_at to its claim: submit-to-start latency for immediate jobs.",
+		Buckets: prometheus.ExponentialBuckets(0.01, 2.5, 12)}, []string{"queue"})
 )
+
+// QueueDepth reports due, unclaimed jobs per queue at each scrape.
+func QueueDepth(pool *pgxpool.Pool) prometheus.Collector { return depth{pool} }
+
+type depth struct{ pool *pgxpool.Pool }
+
+var depthDesc = prometheus.NewDesc("jobs_due_available", "Jobs due to run and not yet claimed.", []string{"queue"}, nil)
+
+func (d depth) Describe(ch chan<- *prometheus.Desc) { ch <- depthDesc }
+
+func (d depth) Collect(ch chan<- prometheus.Metric) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rows, err := d.pool.Query(ctx, `SELECT queue, count(*) FROM jobs WHERE state = 'available' AND run_at <= now() GROUP BY queue`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var q string
+		var n float64
+		if rows.Scan(&q, &n) == nil {
+			ch <- prometheus.MustNewConstMetric(depthDesc, prometheus.GaugeValue, n, q)
+		}
+	}
+}
 
 // Server implements workerv1connect.WorkerServiceHandler.
 type Server struct {
@@ -72,6 +101,9 @@ func (s *Server) Claim(ctx context.Context, req *connect.Request[workerv1.ClaimR
 		jobs, err := s.store.Claim(ctx, p)
 		if err == nil && len(jobs) > 0 { // claimed rows must reach the worker, even at the deadline
 			claimed.Add(float64(len(jobs)))
+			for _, j := range jobs {
+				waited.WithLabelValues(j.Queue).Observe(max(j.WaitSeconds, 0))
+			}
 			return connect.NewResponse(&workerv1.ClaimResponse{Jobs: toProto(jobs)}), nil
 		}
 		if ctx.Err() != nil {

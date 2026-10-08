@@ -152,6 +152,27 @@ services:
     environment: { MP_MAX_MESSAGES: 0 } # keep every message: the checker counts them all
     ports: ["8025:8025"]
 
+  # Monitoring: Prometheus scrapes dispatch and the schedulers over mTLS; Grafana (local
+  # only, anonymous read access) at http://localhost:3000.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./certs:/certs:ro
+    ports: ["127.0.0.1:9090:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/task-queue.json
+    volumes: ["./grafana/provisioning:/etc/grafana/provisioning:ro"]
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus]
+
 volumes:
   pgdata:
   sinksdata:

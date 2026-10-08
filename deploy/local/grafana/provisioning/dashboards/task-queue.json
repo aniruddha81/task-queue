@@ -1,0 +1,47 @@
+{
+  "uid": "task-queue",
+  "title": "task-queue",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "timeseries", "title": "Claims per second", "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "sum(rate(dispatch_jobs_claimed_total[1m]))", "legendFormat": "claims/s" }]
+    },
+    {
+      "type": "timeseries", "title": "Queue depth (due, unclaimed)", "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "jobs_due_available", "legendFormat": "{{queue}}" }]
+    },
+    {
+      "type": "timeseries", "title": "Submit-to-start latency", "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le) (rate(dispatch_job_wait_seconds_bucket[1m])))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(dispatch_job_wait_seconds_bucket[1m])))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(dispatch_job_wait_seconds_bucket[1m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Lease expiries (reaped) per minute", "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(scheduler_chore_changes_total{chore=\"reap\"}[1m]))", "legendFormat": "reaped" }]
+    },
+    {
+      "type": "timeseries", "title": "Retries and fenced results per second", "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(rate(dispatch_results_total{call=\"fail\",outcome=\"ok\"}[1m]))", "legendFormat": "failed attempts" },
+        { "expr": "sum(rate(dispatch_results_total{outcome=\"lease_lost\"}[1m]))", "legendFormat": "late results rejected" }
+      ]
+    },
+    {
+      "type": "stat", "title": "Leader epoch", "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "max(scheduler_leader_epoch)", "legendFormat": "epoch" }]
+    }
+  ]
+}

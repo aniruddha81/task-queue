@@ -46,10 +46,7 @@ func New(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/auth/", g.auth)
 	mux.Handle("GET /.well-known/jwks.json", g.auth)
-	mux.Handle("/v1/jobs", g.authed(g.jobs))
-	mux.Handle("/v1/jobs/", g.authed(g.jobs))
-	mux.Handle("/v1/schedules", g.authed(g.jobs))
-	mux.Handle("/v1/schedules/", g.authed(g.jobs))
+	mux.Handle("/v1/", g.authed(g.jobs)) // everything under /v1 except /v1/auth/
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" && r.Method != "HEAD" {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")

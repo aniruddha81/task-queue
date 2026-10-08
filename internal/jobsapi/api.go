@@ -48,6 +48,17 @@ func New(store *queue.Store, auth *authn.Verifier, log *slog.Logger) http.Handle
 	mux.HandleFunc("POST /v1/jobs/{id}/cancel", a.authed(a.cancel))
 	mux.HandleFunc("POST /v1/jobs/{id}/redrive", a.authed(a.redrive))
 	a.scheduleRoutes(mux)
+	mux.HandleFunc("GET /v1/jobs/{id}/attempts", a.authed(a.attempts))
+	mux.HandleFunc("GET /v1/queues", a.authed(a.queues))
+	// Operational views: system-wide, read-only, for any signed-in user.
+	mux.HandleFunc("GET /v1/workers", a.authed(func(w http.ResponseWriter, r *http.Request, _ uuid.UUID) {
+		v, err := a.store.Workers(r.Context())
+		a.view(w, map[string]any{"workers": v}, err)
+	}))
+	mux.HandleFunc("GET /v1/leader", a.authed(func(w http.ResponseWriter, r *http.Request, _ uuid.UUID) {
+		v, err := a.store.Leader(r.Context())
+		a.view(w, v, err)
+	}))
 	return mux
 }
 
@@ -143,6 +154,35 @@ func (a *api) redrive(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 	}
 	job, err := a.store.Redrive(r.Context(), owner, id)
 	a.respond(w, job, err)
+}
+
+func (a *api) attempts(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, queue.ErrNotFound.Error())
+		return
+	}
+	v, err := a.store.Attempts(r.Context(), owner, id)
+	if errors.Is(err, queue.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	a.view(w, map[string]any{"attempts": v}, err)
+}
+
+func (a *api) queues(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
+	v, err := a.store.QueueCounts(r.Context(), owner)
+	a.view(w, map[string]any{"queues": v}, err)
+}
+
+// view writes a read-only result, or a 500.
+func (a *api) view(w http.ResponseWriter, v any, err error) {
+	if err != nil {
+		a.log.Error("view", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 func (a *api) respond(w http.ResponseWriter, job queue.Job, err error) {

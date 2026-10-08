@@ -1,0 +1,24 @@
+# Scrapes over mTLS, like every other internal call.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: dispatch
+    scheme: https
+    tls_config: &tls
+      ca_file: /certs/ca.crt
+      cert_file: /certs/prometheus.crt
+      key_file: /certs/prometheus.key
+      server_name: dispatch
+    static_configs:
+      - targets: ["dispatch:8081"]
+
+  - job_name: scheduler # every replica: the compose DNS name returns all of them
+    scheme: https
+    tls_config:
+      <<: *tls
+      server_name: scheduler
+    dns_sd_configs:
+      - names: ["scheduler"]
+        type: A
+        port: 8082

@@ -14,6 +14,7 @@ import (
 	_ "time/tzdata" // cron time zones must work even in images without zoneinfo
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/aniruddha81/task-queue/internal/scheduler"
 	"github.com/aniruddha81/task-queue/internal/serve"
@@ -42,6 +43,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	serve.Health(mux, pool.Ping)
+	mux.Handle("/metrics", promhttp.Handler())
 	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8082"), mux, certs.Server()); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)

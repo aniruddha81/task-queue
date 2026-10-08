@@ -16,12 +16,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/aniruddha81/task-queue/internal/mutant"
 	"github.com/aniruddha81/task-queue/internal/queue"
 )
 
 var ErrNotLeader = errors.New("not the leader")
+
+var (
+	choreChanges = promauto.NewCounterVec(prometheus.CounterOpts{Name: "scheduler_chore_changes_total",
+		Help: "Rows changed by leader chores: reap = expired leases, cron = ticks created."}, []string{"chore"})
+	leaderEpoch = promauto.NewGauge(prometheus.GaugeOpts{Name: "scheduler_leader_epoch",
+		Help: "The epoch this process leads, or 0 when it isn't the leader."})
+)
 
 type Config struct {
 	TTL       time.Duration // leader lease length; default 15 s
@@ -65,7 +74,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 			continue
 		}
 		s.log.Info("became leader", "epoch", epoch)
+		leaderEpoch.Set(float64(epoch))
 		s.lead(ctx, epoch)
+		leaderEpoch.Set(0)
 		s.log.Info("stepped down", "epoch", epoch)
 	}
 }
@@ -127,6 +138,7 @@ func (s *Scheduler) lead(ctx context.Context, epoch int64) {
 				s.log.Error("chore", "chore", c.name, "err", err)
 			}
 			if n > 0 {
+				choreChanges.WithLabelValues(c.name).Add(float64(n))
 				s.log.Info("chore", "chore", c.name, "changed", n)
 			}
 		}
