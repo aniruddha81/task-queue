@@ -31,6 +31,22 @@ jobs:
         run: go generate . && git diff --exit-code
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build # static export to web/out
+
   # Compares proto/ against the previous release commit. Skipped on the branch's first push.
   proto-breaking:
     if: github.event.before != '0000000000000000000000000000000000000000'
