@@ -171,11 +171,14 @@ func (l *load) plan(rng *rand.Rand, n int) spec {
 			job["run_at"] = time.Now().Add(time.Duration(5+rng.IntN(15)) * time.Second).UTC().Format(time.RFC3339Nano)
 		}
 	case r < 0.55:
-		job["type"], job["payload"] = "webhook.deliver", map[string]any{"url": "https://sinks:8090/webhook", "body": map[string]int{"n": n}}
+		job["type"], job["payload"] = "webhook.deliver", map[string]any{"url": l.c.webhook, "body": map[string]int{"n": n}}
 	case r < 0.63:
 		job["type"], job["payload"] = "email.send", map[string]any{"to": fmt.Sprintf("user%d@example.com", n), "subject": l.runID + " #" + strconv.Itoa(n)}
 	case r < 0.83:
 		job["type"], job["payload"] = "chaos.sleep", map[string]any{"ms": 50 + rng.IntN(1500)}
+		if rng.Float64() < 0.3 { // waits up to 30 s for a worker in that cloud, then any may take it
+			job["affinity"] = []string{"aws", "azure"}[rng.IntN(2)]
+		}
 	case r < 0.91:
 		job["type"], job["payload"] = "chaos.fail", map[string]any{"p": 0.5}
 	case r < 0.98:

@@ -173,6 +173,7 @@ locals {
       AUTH_DB_URL       = local.db_url.auth
       SINKS_DB_PASSWORD = random_password.pw["sinks_db"].result
       SINKS_DB_URL      = "postgres://postgres:${random_password.pw["sinks_db"].result}@localhost:5433/sinks?sslmode=disable"
+      HARNESS_PASSWORD  = random_password.pw["user_demo"].result # the chaos harness submits as demo@example.com
     } : {},
   ) }
 
@@ -310,6 +311,7 @@ resource "aws_ssm_parameter" "topology" {
       cloud  = local.vms[n].cloud
       region = local.vms[n].region
       stage  = local.rank[n] == 0 ? "data" : "app"
+      roles  = local.vms[n].roles
       id     = local.vms[n].cloud == "aws" ? local.instance_id[n] : n
       rg     = local.p.session_resource_group
     }]

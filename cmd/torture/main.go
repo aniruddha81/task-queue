@@ -27,29 +27,34 @@ import (
 type config struct {
 	gateway, ca, email, password string
 	jobsDB, sinksDB, mailpit     string
+	webhook                      string
 	project                      string
 	duration, quiesce            time.Duration
 	rate                         float64
 	seed                         uint64
 	faults                       bool
+	scenario                     string
 	out                          string
 }
 
 func main() {
 	var c config
 	flag.StringVar(&c.gateway, "gateway", "https://localhost:8443", "gateway URL")
-	flag.StringVar(&c.ca, "ca", "deploy/local/certs/ca.crt", "CA certificate for the gateway")
+	flag.StringVar(&c.ca, "ca", "deploy/local/certs/ca.crt", "CA certificate for the gateway (empty: the system's, for a public certificate)")
 	flag.StringVar(&c.email, "email", "demo@example.com", "user to submit as")
 	flag.StringVar(&c.password, "password", "demo-password-1", "that user's password")
 	flag.StringVar(&c.jobsDB, "jobs-db", "postgres://postgres:superuser-local-only@localhost:5432,localhost:5434/jobs?sslmode=require&target_session_attrs=read-write", "jobs database (read by the checker)")
 	flag.StringVar(&c.sinksDB, "sinks-db", "postgres://postgres:sinks-local-only@localhost:5433/sinks?sslmode=disable", "sinks database")
 	flag.StringVar(&c.mailpit, "mailpit", "http://localhost:8025", "Mailpit API")
+	flag.StringVar(&c.webhook, "webhook", "https://sinks:8090/webhook", "the sinks' webhook receiver, as workers reach it")
 	flag.StringVar(&c.project, "project", "taskqueue", "docker compose project")
 	flag.DurationVar(&c.duration, "duration", 5*time.Minute, "load and fault phase")
 	flag.DurationVar(&c.quiesce, "quiesce", 10*time.Minute, "longest wait for every job to finish (G5)")
 	flag.Float64Var(&c.rate, "rate", 8, "jobs submitted per second")
 	flag.Uint64Var(&c.seed, "seed", uint64(time.Now().UnixNano()), "seed for the job mix and the fault timetable")
 	flag.BoolVar(&c.faults, "faults", true, "inject faults")
+	flag.StringVar(&c.scenario, "scenario", "", "name of a fault applied from outside during the run (the cloud experiments); "+
+		"it counts as G1's fault, and guarantees it doesn't exercise are reported, not failed")
 	flag.StringVar(&c.out, "out", "docs/results", "report directory")
 	flag.Parse()
 
@@ -70,12 +75,15 @@ func run(ctx context.Context, c config) (bool, error) {
 	runID := fmt.Sprintf("r%dt%d", c.seed, time.Now().Unix())
 	log.Printf("run %s: seed %d, %v of load at %.1f jobs/s, faults=%v", runID, c.seed, c.duration, c.rate, c.faults)
 
-	pem, err := os.ReadFile(c.ca)
-	if err != nil {
-		return false, err
+	var pool *x509.CertPool // nil: the system's roots
+	if c.ca != "" {
+		pem, err := os.ReadFile(c.ca)
+		if err != nil {
+			return false, err
+		}
+		pool = x509.NewCertPool()
+		pool.AppendCertsFromPEM(pem)
 	}
-	pool := x509.NewCertPool()
-	pool.AppendCertsFromPEM(pem)
 	client := &http.Client{Timeout: 15 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}, MaxIdleConnsPerHost: 64}}
 

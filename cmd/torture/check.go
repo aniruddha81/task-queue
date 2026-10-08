@@ -28,8 +28,13 @@ type row struct {
 
 func (r row) pass() bool { return len(r.violations) == 0 && r.evidence > 0 }
 
+// In a scenario run the one fault comes from outside, so a guarantee it doesn't touch is
+// reported as not exercised instead of failing the run; any violation still fails it.
+func (r *report) ok(x row) bool { return x.pass() || (r.scenario != "" && len(x.violations) == 0) }
+
 type report struct {
 	runID, mutant string
+	scenario      string
 	seed          uint64
 	duration      time.Duration
 	faults        map[string]int
@@ -39,7 +44,7 @@ type report struct {
 
 func (r *report) passed() bool {
 	for _, x := range r.rows {
-		if !x.pass() {
+		if !r.ok(x) {
 			return false
 		}
 	}
@@ -107,7 +112,10 @@ func check(ctx context.Context, c config, l *load, runID string, start time.Time
 		return nil, err
 	}
 
-	r := &report{runID: runID, seed: c.seed, duration: c.duration, faults: faults, mutant: os.Getenv("MUTANT")}
+	if c.scenario != "" {
+		faults[c.scenario]++ // applied from outside, once
+	}
+	r := &report{runID: runID, seed: c.seed, duration: c.duration, faults: faults, mutant: os.Getenv("MUTANT"), scenario: c.scenario}
 	states := map[string]int{}
 	for _, j := range jobs {
 		states[j.state]++
@@ -117,7 +125,7 @@ func check(ctx context.Context, c config, l *load, runID string, start time.Time
 
 	// G1: every acknowledged job exists. Source 1 (the ack log) against source 2.
 	g1 := row{name: "G1", claim: "An acknowledged job is never lost",
-		exercised: "service kills and database primary crashes (failovers)", evidence: faults["kill"] + faults["crash-primary"]}
+		exercised: "service kills, database primary crashes (failovers) and outside scenarios", evidence: faults["kill"] + faults["crash-primary"] + faults[c.scenario]}
 	for _, a := range l.log {
 		if _, ok := jobs[a.id]; !ok {
 			g1.violations = append(g1.violations, fmt.Sprintf("acknowledged %s (key %s) is not in the database", a.id, a.key))
@@ -392,6 +400,9 @@ func (r *report) markdown() string {
 	}
 	fmt.Fprintf(&b, "# Chaos run %s: %s\n\n", r.runID, verdict)
 	fmt.Fprintf(&b, "Seed `%d` · %v of load and faults", r.seed, r.duration)
+	if r.scenario != "" {
+		fmt.Fprintf(&b, " · **scenario `%s`**, applied from outside", r.scenario)
+	}
 	if r.mutant != "" {
 		fmt.Fprintf(&b, " · **mutant build `%s`** (expected to FAIL)", r.mutant)
 	}
@@ -411,8 +422,10 @@ func (r *report) markdown() string {
 	b.WriteString("\n## Guarantees\n\n| | Guarantee | Result | Exercised | Violations |\n| --- | --- | --- | --- | --- |\n")
 	for _, x := range r.rows {
 		res := "PASS"
-		if !x.pass() {
+		if !r.ok(x) {
 			res = "**FAIL**"
+		} else if x.evidence == 0 {
+			res = "not exercised"
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %d %s | %d |\n", x.name, x.claim, res, x.evidence, x.exercised, len(x.violations))
 	}
@@ -440,6 +453,9 @@ func (r *report) write(dir, runID string) (string, error) {
 		return "", err
 	}
 	name := "chaos-" + runID
+	if r.scenario != "" {
+		name += "-" + r.scenario
+	}
 	if r.mutant != "" {
 		name += "-" + r.mutant
 	}
