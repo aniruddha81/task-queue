@@ -34,7 +34,7 @@ func main() {
 		}
 	}
 	write("ca.crt", ca.CertPEM())
-	for _, svc := range []string{"gateway", "auth", "jobs", "dispatch", "scheduler", "worker", "migrate", "postgres"} {
+	for _, svc := range []string{"gateway", "auth", "jobs", "dispatch", "scheduler", "worker", "migrate", "postgres", "sinks"} {
 		crt, key, err := ca.Issue(svc, svc, "localhost")
 		if err != nil {
 			log.Fatal(err)

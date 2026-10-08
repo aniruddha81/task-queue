@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/aniruddha81/task-queue/internal/mutant"
 )
 
 var (
@@ -46,6 +48,7 @@ const columns = `id, queue, type, payload, priority, run_at, state, cancel_reque
 // NewJob is a validated submission. Request is the client's original body: a repeat
 // with the same key must send the same JSON (key order and whitespace don't matter).
 type NewJob struct {
+	ID             *uuid.UUID // nil: the database picks a UUIDv7
 	Owner          uuid.UUID
 	Key            string
 	Request        json.RawMessage
@@ -71,14 +74,17 @@ func NewStore(db DB) *Store { return &Store{db} }
 
 // Submit inserts a job, or returns the existing one for a repeated key (created=false).
 func (s *Store) Submit(ctx context.Context, j NewJob) (job Job, created bool, err error) {
+	if mutant.NoKey {
+		j.Key += ":" + uuid.NewV7().String()
+	}
 	rows, _ := s.db.Query(ctx, `
-		INSERT INTO jobs (owner_id, idempotency_key, request, queue, type, payload, priority,
+		INSERT INTO jobs (id, owner_id, idempotency_key, request, queue, type, payload, priority,
 		                  run_at, max_attempts, timeout_seconds, affinity)
-		VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, $7, COALESCE($8, now()), $9, $10, $11)
+		VALUES (COALESCE($12, uuidv7()), $1, $2, $3::jsonb, $4, $5, $6::jsonb, $7, COALESCE($8, now()), $9, $10, $11)
 		ON CONFLICT (owner_id, idempotency_key) DO NOTHING
 		RETURNING `+columns,
 		j.Owner, j.Key, string(j.Request), j.Queue, j.Type, string(j.Payload), j.Priority,
-		j.RunAt, j.MaxAttempts, j.TimeoutSeconds, j.Affinity)
+		j.RunAt, j.MaxAttempts, j.TimeoutSeconds, j.Affinity, j.ID)
 	job, err = pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[Job])
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return job, err == nil, err

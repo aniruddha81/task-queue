@@ -10,6 +10,7 @@
 package jobsapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,9 +18,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"uuid"
 
 	"github.com/aniruddha81/task-queue/internal/authn"
+	"github.com/aniruddha81/task-queue/internal/mutant"
 	"github.com/aniruddha81/task-queue/internal/queue"
 )
 
@@ -70,6 +73,16 @@ func (a *api) submit(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 	j, err := parseSubmit(owner, r.Header.Get("Idempotency-Key"), raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if mutant.AckFirst { // broken on purpose: acknowledge, then commit a second later
+		id := uuid.NewV7()
+		j.ID = &id
+		go func() {
+			time.Sleep(time.Second)
+			a.store.Submit(context.Background(), j)
+		}()
+		writeJSON(w, http.StatusCreated, queue.Job{ID: id, State: "available"})
 		return
 	}
 	job, created, err := a.store.Submit(r.Context(), j)

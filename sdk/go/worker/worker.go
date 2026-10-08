@@ -88,7 +88,9 @@ func New(cfg Config) *Worker {
 	if cfg.HTTPClient == nil {
 		var p http.Protocols
 		p.SetUnencryptedHTTP2(true)
-		cfg.HTTPClient = &http.Client{Transport: &http.Transport{Protocols: &p}}
+		// Health pings: a connection silently dead after a network cut is replaced in seconds.
+		cfg.HTTPClient = &http.Client{Transport: &http.Transport{Protocols: &p,
+			HTTP2: &http.HTTP2Config{SendPingTimeout: 10 * time.Second, PingTimeout: 5 * time.Second}}}
 	}
 	w := &Worker{cfg: cfg, node: uuid.NewV7(), handlers: map[string]Handler{}, active: map[string]*running{}}
 	for _, d := range cfg.Dispatchers {

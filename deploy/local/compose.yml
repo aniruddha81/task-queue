@@ -3,18 +3,22 @@
 #   docker compose -f deploy/local/compose.yml up --build
 # Everything talks TLS: the gateway (https://localhost:8443) is the only public port, and
 # every internal call uses mTLS with certificates from deploy/local/certs.
+# MUTANT=mutant_<name> builds a deliberately broken variant for the chaos checker's self-test.
 name: taskqueue
 
 x-service: &service
+  restart: unless-stopped
   volumes: ["./certs:/certs:ro"]
   environment: &env
     TLS_DIR: /certs
 x-jobs-db: &jobs-db postgres://jobs_svc:jobs-local-only@postgres:5432/jobs?sslmode=verify-full&sslrootcert=/certs/ca.crt
+x-sinks-db: &sinks-db postgres://postgres:sinks-local-only@sinks-postgres:5432/sinks?sslmode=disable
 x-auth-db: &auth-db postgres://auth_svc:auth-local-only@postgres:5432/auth?sslmode=verify-full&sslrootcert=/certs/ca.crt
 
 services:
   postgres:
     image: postgres:18
+    restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: superuser-local-only # tests connect as postgres with this, over TLS
     # The server key must be private and owned by postgres; bind mounts on Windows aren't,
@@ -44,21 +48,23 @@ services:
 
   migrate-jobs:
     <<: *service
-    build: { context: ../.., target: app, args: { CMD: migrate } }
+    restart: "no"
+    build: { context: ../.., target: app, args: { CMD: migrate, TAGS: "${MUTANT:-}" } }
     command: ["jobs"]
     environment: { <<: *env, DATABASE_URL: *jobs-db }
     depends_on: { postgres: { condition: service_healthy } }
 
   migrate-auth:
     <<: *service
-    build: { context: ../.., target: app, args: { CMD: migrate } }
+    restart: "no"
+    build: { context: ../.., target: app, args: { CMD: migrate, TAGS: "${MUTANT:-}" } }
     command: ["auth"]
     environment: { <<: *env, DATABASE_URL: *auth-db }
     depends_on: { postgres: { condition: service_healthy } }
 
   auth:
     <<: *service
-    build: { context: ../.., target: app, args: { CMD: auth } }
+    build: { context: ../.., target: app, args: { CMD: auth, TAGS: "${MUTANT:-}" } }
     env_file: ./certs/secrets.env # JWT_PRIVATE_KEY, written by cmd/devcerts
     environment:
       <<: *env
@@ -69,33 +75,41 @@ services:
 
   jobs:
     <<: *service
-    build: { context: ../.., target: app, args: { CMD: jobs } }
+    build: { context: ../.., target: app, args: { CMD: jobs, TAGS: "${MUTANT:-}" } }
     environment: { <<: *env, DATABASE_URL: *jobs-db, JWKS_URL: "https://auth:8083/.well-known/jwks.json" }
     depends_on: { migrate-jobs: { condition: service_completed_successfully } }
 
   dispatch:
     <<: *service
-    build: { context: ../.., target: app, args: { CMD: dispatch } }
+    build: { context: ../.., target: app, args: { CMD: dispatch, TAGS: "${MUTANT:-}" } }
     environment: { <<: *env, DATABASE_URL: *jobs-db }
     depends_on: { migrate-jobs: { condition: service_completed_successfully } }
 
   scheduler:
     <<: *service
-    build: { context: ../.., target: app, args: { CMD: scheduler } }
+    build: { context: ../.., target: app, args: { CMD: scheduler, TAGS: "${MUTANT:-}" } }
     scale: 2 # one leads; the other takes over when it dies
     environment: { <<: *env, DATABASE_URL: *jobs-db }
     depends_on: { migrate-jobs: { condition: service_completed_successfully } }
 
   worker:
     <<: *service
-    build: { context: ../.., target: app, args: { CMD: worker } }
-    environment: { <<: *env, DISPATCHERS: "https://dispatch:8081", CLOUD: aws }
+    build: { context: ../.., target: app, args: { CMD: worker, TAGS: "${MUTANT:-}" } }
+    scale: 2
+    environment:
+      <<: *env
+      DISPATCHERS: https://dispatch:8081
+      CLOUD: aws
+      CONCURRENCY: 8
+      SINKS_URL: https://sinks:8090
+      SMTP_ADDR: mailpit:1025
+      WEBHOOK_ALLOW: https://sinks:8090/webhook
     stop_grace_period: 1m # drain: running jobs finish before the container stops
-    depends_on: [dispatch]
+    depends_on: [dispatch, sinks]
 
   gateway:
     <<: *service
-    build: { context: ../.., target: gateway, args: { CMD: gateway } }
+    build: { context: ../.., target: gateway, args: { CMD: gateway, TAGS: "${MUTANT:-}" } }
     environment:
       <<: *env
       AUTH_URL: https://auth:8083
@@ -104,5 +118,40 @@ services:
     ports: ["8443:8443"]
     depends_on: [auth, jobs]
 
+  # Test destinations: they play external systems, so they have their own database and
+  # are never faulted by the chaos harness.
+  sinks-postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment: { POSTGRES_PASSWORD: sinks-local-only, POSTGRES_DB: sinks }
+    ports: ["5433:5432"]
+    volumes: ["sinksdata:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate-sinks:
+    <<: *service
+    restart: "no"
+    build: { context: ../.., target: app, args: { CMD: migrate, TAGS: "${MUTANT:-}" } }
+    command: ["sinks"]
+    environment: { <<: *env, DATABASE_URL: *sinks-db }
+    depends_on: { sinks-postgres: { condition: service_healthy } }
+
+  sinks:
+    <<: *service
+    build: { context: ../.., target: app, args: { CMD: sinks, TAGS: "${MUTANT:-}" } }
+    environment: { <<: *env, DATABASE_URL: *sinks-db }
+    depends_on: { migrate-sinks: { condition: service_completed_successfully } }
+
+  mailpit:
+    image: axllent/mailpit:v1.29
+    restart: unless-stopped
+    environment: { MP_MAX_MESSAGES: 0 } # keep every message: the checker counts them all
+    ports: ["8025:8025"]
+
 volumes:
   pgdata:
+  sinksdata:

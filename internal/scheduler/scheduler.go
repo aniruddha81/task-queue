@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aniruddha81/task-queue/internal/mutant"
 	"github.com/aniruddha81/task-queue/internal/queue"
 )
 
@@ -142,9 +143,12 @@ func (s *Scheduler) chore(ctx context.Context, epoch int64, name string, run fun
 		return 0, err
 	}
 	defer tx.Rollback(context.Background())
+	fence := "holder = $1 AND epoch = $2 AND expires_at > now()"
+	if mutant.NoEpoch {
+		fence = "$1::uuid IS NOT NULL AND $2::bigint IS NOT NULL"
+	}
 	var one int
-	err = tx.QueryRow(ctx, `SELECT 1 FROM leader_leases
-		WHERE name = 'scheduler' AND holder = $1 AND epoch = $2 AND expires_at > now()
+	err = tx.QueryRow(ctx, `SELECT 1 FROM leader_leases WHERE name = 'scheduler' AND `+fence+`
 		FOR SHARE`, s.me, epoch).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrNotLeader

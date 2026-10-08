@@ -3,11 +3,11 @@ package pgtest
 
 import (
 	"database/sql"
-	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
-	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,7 +29,8 @@ func New(t *testing.T) string {
 		t.Fatal(err)
 	}
 	admin := stdlib.OpenDB(*cfg)
-	name := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	// Random, not time-based: parallel test packages, and a coarse clock (Windows), collide.
+	name := "test_" + strings.ReplaceAll(uuid.NewV4().String(), "-", "")
 	if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
 		admin.Close()
 		t.Fatal(err)

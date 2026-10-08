@@ -1,13 +1,13 @@
-// Command worker runs the demo job handlers.
+// Command worker runs the demo job handlers (see internal/handlers).
 //
 // Environment: DISPATCHERS (comma-separated URLs, nearest first), CLOUD (aws|azure),
-// QUEUES (comma-separated, default "default"), CONCURRENCY (default 4).
+// QUEUES (comma-separated, default "default"), CONCURRENCY (default 4), SINKS_URL,
+// SMTP_ADDR, WEBHOOK_ALLOW (comma-separated URL prefixes), TLS_DIR.
 package main
 
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
+	"github.com/aniruddha81/task-queue/internal/handlers"
 	"github.com/aniruddha81/task-queue/internal/serve"
 	"github.com/aniruddha81/task-queue/sdk/go/worker"
 )
@@ -41,9 +41,14 @@ func main() {
 		Concurrency: concurrency,
 		Log:         log,
 		// mTLS to dispatch; no client timeout: claims are long polls with their own deadlines.
-		HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: certs.Client(), ForceAttemptHTTP2: true}},
+		HTTPClient: &http.Client{Transport: serve.Transport(certs)},
 	})
-	w.Handle("chaos.sleep", sleepHandler)
+	handlers.Register(w, handlers.Config{
+		Sinks:        os.Getenv("SINKS_URL"),
+		SMTP:         os.Getenv("SMTP_ADDR"),
+		WebhookAllow: strings.Split(os.Getenv("WEBHOOK_ALLOW"), ","),
+		Client:       serve.Client(certs),
+	})
 
 	log.Info("worker started")
 	if err := w.Run(ctx); err != nil {
@@ -51,18 +56,4 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("drained, exiting")
-}
-
-// sleepHandler sleeps for payload {"ms": N}, stopping early if its context ends.
-func sleepHandler(ctx context.Context, job worker.Job) error {
-	var p struct{ MS int }
-	if err := json.Unmarshal(job.Payload, &p); err != nil {
-		return worker.Permanent(err)
-	}
-	select {
-	case <-time.After(time.Duration(p.MS) * time.Millisecond):
-		return nil
-	case <-ctx.Done():
-		return context.Cause(ctx)
-	}
 }

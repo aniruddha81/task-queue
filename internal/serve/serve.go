@@ -57,10 +57,19 @@ func Run(ctx context.Context, log *slog.Logger, addr string, h http.Handler, tls
 	return nil
 }
 
+// Transport calls other services over mTLS and HTTP/2, with connection health checks:
+// after a network cut, a connection can be silently dead, and without pings HTTP/2 keeps
+// sending requests into it until the OS gives up, which can take many minutes (found by
+// the chaos test: workers stopped claiming after a partition healed).
+func Transport(b *tlsconf.Bundle) *http.Transport {
+	return &http.Transport{
+		TLSClientConfig:   b.Client(),
+		ForceAttemptHTTP2: true,
+		HTTP2:             &http.HTTP2Config{SendPingTimeout: 10 * time.Second, PingTimeout: 5 * time.Second},
+	}
+}
+
 // Client is an HTTP client for calling other services over mTLS.
 func Client(b *tlsconf.Bundle) *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: b.Client(), ForceAttemptHTTP2: true},
-		Timeout:   30 * time.Second,
-	}
+	return &http.Client{Transport: Transport(b), Timeout: 30 * time.Second}
 }

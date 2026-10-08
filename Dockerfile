@@ -14,7 +14,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG CMD
-RUN CGO_ENABLED=0 go build -trimpath -o /out/app ./cmd/${CMD}
+# TAGS selects a mutant build for the chaos checker's self-test, e.g. mutant_nofence.
+ARG TAGS=""
+RUN CGO_ENABLED=0 go build -trimpath -tags "${TAGS}" -o /out/app ./cmd/${CMD}
 
 FROM gcr.io/distroless/static:nonroot AS app
 COPY --from=build /out/app /app

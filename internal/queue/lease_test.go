@@ -56,6 +56,11 @@ func TestStaleTokenIsFenced(t *testing.T) {
 	if err := s.Fail(t.Context(), stale, "x", false); !errors.Is(err, ErrLeaseLost) {
 		t.Errorf("stale fail: %v, want ErrLeaseLost", err)
 	}
+	var late *string
+	pool.QueryRow(t.Context(), `SELECT late_result FROM job_attempts WHERE lease_token = $1`, a.LeaseToken).Scan(&late)
+	if late == nil || *late != "complete" {
+		t.Errorf("stale complete not recorded on its attempt: late_result = %v", late)
+	}
 	if st, _ := s.Heartbeat(t.Context(), []Lease{stale}, 30*time.Second); st[0] != Lost {
 		t.Errorf("stale heartbeat: %v, want Lost", st[0])
 	}

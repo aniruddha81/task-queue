@@ -7,6 +7,8 @@ import (
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aniruddha81/task-queue/internal/mutant"
 )
 
 // ErrLeaseLost means the caller's lease token is no longer current: someone else may own
@@ -122,20 +124,25 @@ func (s *Store) Heartbeat(ctx context.Context, leases []Lease, lease time.Durati
 }
 
 // Complete records success. A retry of a complete that already committed returns nil.
+// The attempt row is found by token, so a result can only ever land on its own attempt.
 func (s *Store) Complete(ctx context.Context, l Lease) error {
+	fence := "lease_token = $2"
+	if mutant.NoFence {
+		fence = "$2::uuid IS NOT NULL"
+	}
 	tag, err := s.db.Exec(ctx, `
 		WITH done AS (
 		  UPDATE jobs SET state = 'succeeded', finished_at = now(), updated_at = now(),
 		                  lease_token = NULL, lease_expires_at = NULL
-		  WHERE id = $1 AND lease_token = $2 AND state = 'running'
-		  RETURNING id, attempt
+		  WHERE id = $1 AND `+fence+` AND state = 'running'
+		  RETURNING id
 		)
 		UPDATE job_attempts a SET outcome = 'succeeded', finished_at = now()
-		FROM done WHERE a.job_id = done.id AND a.attempt = done.attempt`, l.JobID, l.Token)
+		FROM done WHERE a.job_id = done.id AND a.lease_token = $2`, l.JobID, l.Token)
 	if err != nil || tag.RowsAffected() == 1 {
 		return err
 	}
-	return s.alreadyRecorded(ctx, l, "succeeded")
+	return s.alreadyRecorded(ctx, l, "complete", "succeeded")
 }
 
 // Fail records a failed attempt. The job is cancelled if a cancel was requested, dead if it
@@ -153,21 +160,22 @@ func (s *Store) Fail(ctx context.Context, l Lease, msg string, permanent bool) e
 		    lease_token = NULL, lease_expires_at = NULL, deadline_at = NULL,
 		    last_error = $3, updated_at = now()
 		  WHERE id = $1 AND lease_token = $2 AND state = 'running'
-		  RETURNING id, attempt, state
+		  RETURNING id, state
 		)
 		UPDATE job_attempts a
 		SET outcome = CASE WHEN f.state = 'cancelled' THEN 'cancelled' ELSE 'failed' END,
 		    finished_at = now(), error = $3
-		FROM f WHERE a.job_id = f.id AND a.attempt = f.attempt`,
+		FROM f WHERE a.job_id = f.id AND a.lease_token = $2`,
 		l.JobID, l.Token, msg, permanent)
 	if err != nil || tag.RowsAffected() == 1 {
 		return err
 	}
-	return s.alreadyRecorded(ctx, l, "failed", "cancelled")
+	return s.alreadyRecorded(ctx, l, "fail", "failed", "cancelled")
 }
 
-// alreadyRecorded tells a retry of a committed result (nil) from a stale token (ErrLeaseLost).
-func (s *Store) alreadyRecorded(ctx context.Context, l Lease, outcomes ...string) error {
+// alreadyRecorded tells a retry of a committed result (nil) from a stale token
+// (ErrLeaseLost). A stale result is noted on its attempt as evidence for G3.
+func (s *Store) alreadyRecorded(ctx context.Context, l Lease, kind string, outcomes ...string) error {
 	var outcome *string
 	err := s.db.QueryRow(ctx, `SELECT outcome FROM job_attempts WHERE job_id = $1 AND lease_token = $2`,
 		l.JobID, l.Token).Scan(&outcome)
@@ -181,6 +189,10 @@ func (s *Store) alreadyRecorded(ctx context.Context, l Lease, outcomes ...string
 		if outcome != nil && *outcome == o {
 			return nil
 		}
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE job_attempts SET late_result = $3, late_at = now()
+		WHERE job_id = $1 AND lease_token = $2 AND late_result IS NULL`, l.JobID, l.Token, kind); err != nil {
+		return err
 	}
 	return ErrLeaseLost
 }
