@@ -2,6 +2,7 @@
 package pgtest
 
 import (
+	"database/sql"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,7 +10,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/aniruddha81/task-queue/migrations"
 )
 
 // New creates an empty database on the server at TEST_DATABASE_URL (a postgres:// URL),
@@ -40,4 +44,28 @@ func New(t *testing.T) string {
 	}
 	u.Path = "/" + name
 	return u.String()
+}
+
+// Migrated returns a pool on a fresh database with one database's migrations applied.
+func Migrated(t *testing.T, database string) *pgxpool.Pool {
+	t.Helper()
+	url := New(t)
+	db, err := sql.Open("pgx", url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	p, err := migrations.Provider(db, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }

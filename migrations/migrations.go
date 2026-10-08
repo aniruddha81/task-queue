@@ -20,3 +20,13 @@ func Provider(db *sql.DB, database string) (*goose.Provider, error) {
 	}
 	return goose.NewProvider(goose.DialectPostgres, db, sub)
 }
+
+// Databases lists the databases that have migrations, e.g. ["jobs"].
+func Databases() ([]string, error) {
+	dirs, err := fs.ReadDir(fsys, ".")
+	names := make([]string, len(dirs))
+	for i, d := range dirs {
+		names[i] = d.Name()
+	}
+	return names, err
+}

@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -10,32 +9,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/aniruddha81/task-queue/internal/pgtest"
-	"github.com/aniruddha81/task-queue/migrations"
 )
 
 // newStore returns a Store on a fresh, fully migrated jobs database.
 func newStore(t *testing.T) (*Store, *pgxpool.Pool) {
-	url := pgtest.New(t)
-	db, err := sql.Open("pgx", url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	p, err := migrations.Provider(db, "jobs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := pgxpool.New(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := pgtest.Migrated(t, "jobs")
 	return NewStore(pool), pool
 }
 

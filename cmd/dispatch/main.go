@@ -1,4 +1,4 @@
-// Command jobs serves the public job API (see internal/jobsapi).
+// Command dispatch serves the worker API: claim, heartbeat, complete, fail.
 package main
 
 import (
@@ -11,9 +11,10 @@ import (
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/aniruddha81/task-queue/internal/authn"
-	"github.com/aniruddha81/task-queue/internal/jobsapi"
+	"github.com/aniruddha81/task-queue/gen/taskqueue/worker/v1/workerv1connect"
+	"github.com/aniruddha81/task-queue/internal/dispatch"
 	"github.com/aniruddha81/task-queue/internal/queue"
 	"github.com/aniruddha81/task-queue/internal/serve"
 )
@@ -29,17 +30,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	// Fail closed: no key, no service. Locally, compose passes the dev key's public half.
-	auth, err := authn.NewVerifier(os.Getenv("JWT_PUBLIC_KEY"))
-	if err != nil {
-		log.Error("JWT_PUBLIC_KEY", "err", err)
-		os.Exit(1)
-	}
+
+	srv := dispatch.New(queue.NewStore(pool), log)
+	go srv.Listen(ctx, pool)
 
 	mux := http.NewServeMux()
 	serve.Health(mux, pool.Ping)
-	mux.Handle("/v1/", jobsapi.New(queue.NewStore(pool), auth, log))
-	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8080"), mux); err != nil {
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle(workerv1connect.NewWorkerServiceHandler(srv))
+	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8081"), mux); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}

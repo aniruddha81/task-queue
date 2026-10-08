@@ -2,7 +2,6 @@ package jobsapi
 
 import (
 	"crypto/ed25519"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -15,13 +14,10 @@ import (
 	"uuid"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/aniruddha81/task-queue/internal/authn"
 	"github.com/aniruddha81/task-queue/internal/pgtest"
 	"github.com/aniruddha81/task-queue/internal/queue"
-	"github.com/aniruddha81/task-queue/migrations"
 )
 
 func TestParseSubmit(t *testing.T) {
@@ -159,29 +155,11 @@ func TestHTTP(t *testing.T) {
 }
 
 func newAPI(t *testing.T, pub ed25519.PublicKey) http.Handler {
-	url := pgtest.New(t)
-	db, err := sql.Open("pgx", url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	p, err := migrations.Provider(db, "jobs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := pgxpool.New(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
 	v, err := authn.NewVerifier(base64.StdEncoding.EncodeToString(pub))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(queue.NewStore(pool), v, slog.New(slog.DiscardHandler))
+	return New(queue.NewStore(pgtest.Migrated(t, "jobs")), v, slog.New(slog.DiscardHandler))
 }
 
 func do(t *testing.T, srv *httptest.Server, method, path, token, key, body string) (int, []byte) {

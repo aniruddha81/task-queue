@@ -40,5 +40,20 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
 
+  dispatch:
+    build: { context: ../.., args: { CMD: dispatch } }
+    environment: { DATABASE_URL: *db-url }
+    ports: ["8081:8081"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    build: { context: ../.., args: { CMD: worker } }
+    environment:
+      DISPATCHERS: http://dispatch:8081
+      CLOUD: aws
+    stop_grace_period: 1m # drain: running jobs finish before the container stops
+    depends_on: [dispatch]
+
 volumes:
   pgdata:
