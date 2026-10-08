@@ -122,8 +122,16 @@ probe() {
 
 # ---------- run ----------
 log "harness $(git rev-parse --short "$sha") on $ops, scenario $scenario"
+run "$ops" "tq-converge" >/dev/null # fresh files: Terraform may have changed ops-a's settings
 run "$ops" "$harness" >/dev/null
-until run "$ops" "docker logs torture 2>&1 | grep -q 'of load at'" >/dev/null 2>&1; do sleep 10; done
+until run "$ops" "docker logs torture 2>&1 | grep -q 'load running'" >/dev/null 2>&1; do
+  if [ "$(run "$ops" "docker inspect -f '{{.State.Status}}' torture" 2>/dev/null | head -1)" = exited ]; then
+    run "$ops" "docker logs --tail 20 torture" >&2
+    echo "the harness exited before its load started" >&2
+    exit 1
+  fi
+  sleep 10
+done
 load_start=$(date -u +%s)
 log "load started; probing"
 probe &
@@ -140,7 +148,11 @@ revert
 fault_end=$(date -u +%s)
 log "reverted"
 
-until [ "$(run "$ops" "docker inspect -f '{{.State.Status}}' torture" 2>/dev/null | head -1 | tr -d '[:space:]')" = exited ]; do sleep 20; done
+deadline=$(($(date +%s) + 40 * 60)) # 6 min of load + up to 10 min of quiesce, with margin
+until [ "$(run "$ops" "docker inspect -f '{{.State.Status}}' torture" 2>/dev/null | head -1 | tr -d '[:space:]')" = exited ]; do
+  [ "$(date +%s)" -lt $deadline ] || { echo "the harness is still running after 40 minutes" >&2; exit 1; }
+  sleep 20
+done
 kill $probe_pid 2>/dev/null || true
 code=$(run "$ops" "docker inspect -f '{{.State.ExitCode}}' torture" | head -1 | tr -d '[:space:]')
 report=$(run "$ops" "ls -t /opt/tq-harness/results/*-$scenario.md | head -1" | head -1 | tr -d '[:space:]')

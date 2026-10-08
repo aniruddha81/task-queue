@@ -58,7 +58,11 @@ func newLoad(c config, runID string, client *http.Client, ackPath string) (*load
 }
 
 func (l *load) setup(ctx context.Context) error {
-	if err := l.login(ctx); err != nil {
+	// A wrong password must end the run, not retry forever; later logins (token renewal
+	// during an outage) keep retrying.
+	lctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	if err := l.login(lctx); err != nil {
 		return err
 	}
 	// Mailpit is test infrastructure: start each run with an empty mailbox.

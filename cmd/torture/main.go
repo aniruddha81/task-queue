@@ -96,6 +96,7 @@ func run(ctx context.Context, c config) (bool, error) {
 	if err := l.setup(ctx); err != nil {
 		return false, err
 	}
+	log.Printf("load running") // the cloud experiments time their faults from this line
 	f := newFaults(c)
 	epochBefore, _ := readEpoch(ctx, c.jobsDB)
 	start := time.Now()
