@@ -108,7 +108,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
   }
   os_disk {
     caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
+    storage_account_type = "StandardSSD_LRS" # Standard HDD OS disks retire in September 2028
     disk_size_gb         = 30
   }
   source_image_reference {
