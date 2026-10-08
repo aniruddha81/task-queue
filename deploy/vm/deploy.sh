@@ -52,6 +52,11 @@ for role in $ROLES; do
     fi
     ;;
   ops)
+    # Every migration, not just the sinks': a VM that boots into a fresh session (make up)
+    # converges with no rollout to run them. They are idempotent, and until the database
+    # is up this fails and tq-converge.service retries.
+    migrate jobs "$JOBS_DB_URL"
+    migrate auth "$AUTH_DB_URL"
     compose ops up -d --wait sinks-postgres
     migrate sinks "$SINKS_DB_URL"
     compose ops up -d --remove-orphans
