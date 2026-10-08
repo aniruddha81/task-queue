@@ -24,6 +24,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	certs, err := serve.Certs("dispatch")
+	if err != nil {
+		log.Error("certificates", "err", err)
+		os.Exit(1)
+	}
 	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Error("database config", "err", err)
@@ -38,7 +43,7 @@ func main() {
 	serve.Health(mux, pool.Ping)
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.Handle(workerv1connect.NewWorkerServiceHandler(srv))
-	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8081"), mux); err != nil {
+	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8081"), mux, certs.Server()); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}

@@ -1,66 +1,108 @@
-# Local stack: docker compose -f deploy/local/compose.yml up --build
+# Local stack. First time, and whenever certificates expire:
+#   go run ./cmd/devcerts
+#   docker compose -f deploy/local/compose.yml up --build
+# Everything talks TLS: the gateway (https://localhost:8443) is the only public port, and
+# every internal call uses mTLS with certificates from deploy/local/certs.
 name: taskqueue
 
-x-db-url: &db-url postgres://taskqueue:taskqueue@postgres:5432/jobs?sslmode=disable # local only
+x-service: &service
+  volumes: ["./certs:/certs:ro"]
+  environment: &env
+    TLS_DIR: /certs
+x-jobs-db: &jobs-db postgres://jobs_svc:jobs-local-only@postgres:5432/jobs?sslmode=verify-full&sslrootcert=/certs/ca.crt
+x-auth-db: &auth-db postgres://auth_svc:auth-local-only@postgres:5432/auth?sslmode=verify-full&sslrootcert=/certs/ca.crt
 
 services:
   postgres:
     image: postgres:18
     environment:
-      POSTGRES_USER: taskqueue
-      POSTGRES_PASSWORD: taskqueue # local only
-      POSTGRES_DB: jobs
-    # Paused or dead clients must release their row locks within seconds.
-    command: >
-      postgres
-      -c idle_in_transaction_session_timeout=10s
-      -c tcp_keepalives_idle=10 -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3
+      POSTGRES_PASSWORD: superuser-local-only # tests connect as postgres with this, over TLS
+    # The server key must be private and owned by postgres; bind mounts on Windows aren't,
+    # so copy the certificate files in before starting.
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        install -o postgres -g postgres -m 600 /certs/postgres.key /tmp/server.key &&
+        install -o postgres -g postgres -m 644 /certs/postgres.crt /tmp/server.crt &&
+        exec docker-entrypoint.sh postgres
+        -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key
+        -c hba_file=/etc/postgresql/pg_hba.conf
+        -c idle_in_transaction_session_timeout=10s
+        -c tcp_keepalives_idle=10 -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3
     ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql] # PG 18 images keep data under /var/lib/postgresql/18
+    volumes:
+      - pgdata:/var/lib/postgresql # PG 18 images keep data under /var/lib/postgresql/18
+      - ./certs:/certs:ro
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U taskqueue -d jobs"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
       timeout: 2s
       retries: 30
 
-  migrate:
-    build: { context: ../.., args: { CMD: migrate } }
+  migrate-jobs:
+    <<: *service
+    build: { context: ../.., target: app, args: { CMD: migrate } }
     command: ["jobs"]
-    environment: { DATABASE_URL: *db-url }
-    depends_on:
-      postgres: { condition: service_healthy }
+    environment: { <<: *env, DATABASE_URL: *jobs-db }
+    depends_on: { postgres: { condition: service_healthy } }
+
+  migrate-auth:
+    <<: *service
+    build: { context: ../.., target: app, args: { CMD: migrate } }
+    command: ["auth"]
+    environment: { <<: *env, DATABASE_URL: *auth-db }
+    depends_on: { postgres: { condition: service_healthy } }
+
+  auth:
+    <<: *service
+    build: { context: ../.., target: app, args: { CMD: auth } }
+    env_file: ./certs/secrets.env # JWT_PRIVATE_KEY, written by cmd/devcerts
+    environment:
+      <<: *env
+      DATABASE_URL: *auth-db
+      # Local demo accounts only.
+      SEED_USERS: admin@example.com:admin-password-1:admin,demo@example.com:demo-password-1
+    depends_on: { migrate-auth: { condition: service_completed_successfully } }
 
   jobs:
-    build: { context: ../.., args: { CMD: jobs } }
-    environment:
-      DATABASE_URL: *db-url
-      # Public half of the dev-only key (go run ./cmd/devtoken -pubkey). Never use in the cloud.
-      JWT_PUBLIC_KEY: tRGjV0WSLFdGjYN3g/DC+luzVJ50Z69aX/kR5B0TpLo=
-    ports: ["8080:8080"]
-    depends_on:
-      migrate: { condition: service_completed_successfully }
+    <<: *service
+    build: { context: ../.., target: app, args: { CMD: jobs } }
+    environment: { <<: *env, DATABASE_URL: *jobs-db, JWKS_URL: "https://auth:8083/.well-known/jwks.json" }
+    depends_on: { migrate-jobs: { condition: service_completed_successfully } }
 
   dispatch:
-    build: { context: ../.., args: { CMD: dispatch } }
-    environment: { DATABASE_URL: *db-url }
-    ports: ["8081:8081"]
-    depends_on:
-      migrate: { condition: service_completed_successfully }
+    <<: *service
+    build: { context: ../.., target: app, args: { CMD: dispatch } }
+    environment: { <<: *env, DATABASE_URL: *jobs-db }
+    depends_on: { migrate-jobs: { condition: service_completed_successfully } }
 
   scheduler:
-    build: { context: ../.., args: { CMD: scheduler } }
+    <<: *service
+    build: { context: ../.., target: app, args: { CMD: scheduler } }
     scale: 2 # one leads; the other takes over when it dies
-    environment: { DATABASE_URL: *db-url }
-    depends_on:
-      migrate: { condition: service_completed_successfully }
+    environment: { <<: *env, DATABASE_URL: *jobs-db }
+    depends_on: { migrate-jobs: { condition: service_completed_successfully } }
 
   worker:
-    build: { context: ../.., args: { CMD: worker } }
-    environment:
-      DISPATCHERS: http://dispatch:8081
-      CLOUD: aws
+    <<: *service
+    build: { context: ../.., target: app, args: { CMD: worker } }
+    environment: { <<: *env, DISPATCHERS: "https://dispatch:8081", CLOUD: aws }
     stop_grace_period: 1m # drain: running jobs finish before the container stops
     depends_on: [dispatch]
+
+  gateway:
+    <<: *service
+    build: { context: ../.., target: gateway, args: { CMD: gateway } }
+    environment:
+      <<: *env
+      AUTH_URL: https://auth:8083
+      JOBS_URL: https://jobs:8080
+      PUBLIC_ORIGIN: https://localhost:8443
+    ports: ["8443:8443"]
+    depends_on: [auth, jobs]
 
 volumes:
   pgdata:

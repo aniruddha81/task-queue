@@ -24,23 +24,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	certs, err := serve.Certs("jobs")
+	if err != nil {
+		log.Error("certificates", "err", err)
+		os.Exit(1)
+	}
 	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Error("database config", "err", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
-	// Fail closed: no key, no service. Locally, compose passes the dev key's public half.
-	auth, err := authn.NewVerifier(os.Getenv("JWT_PUBLIC_KEY"))
-	if err != nil {
-		log.Error("JWT_PUBLIC_KEY", "err", err)
-		os.Exit(1)
-	}
+	// Fails closed: every request is refused until auth's keys have loaded.
+	verifier := authn.NewVerifier()
+	go verifier.Watch(ctx, os.Getenv("JWKS_URL"), serve.Client(certs), log)
 
 	mux := http.NewServeMux()
-	serve.Health(mux, pool.Ping)
-	mux.Handle("/v1/", jobsapi.New(queue.NewStore(pool), auth, log))
-	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8080"), mux); err != nil {
+	serve.Health(mux, pool.Ping, verifier.Ready)
+	mux.Handle("/v1/", jobsapi.New(queue.NewStore(pool), verifier, log))
+	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8080"), mux, certs.Server()); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}

@@ -4,7 +4,7 @@ A distributed job scheduler in Go, running across AWS and Azure. It never loses 
 
 It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
 
-> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. The chaos harness comes next.
+> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway. The chaos harness comes next.
 
 ## Use cases
 
@@ -34,48 +34,51 @@ Use it for any work that has to happen **later**, **reliably**, and **exactly on
 You need Go 1.27 and Docker.
 
 ```sh
+go run ./cmd/devcerts                                   # dev CA, service certificates, local JWT key (git-ignored)
 docker compose -f deploy/local/compose.yml up --build
 ```
 
-This starts PostgreSQL 18, applies the migrations, and starts `jobs` (the API, port 8080), `dispatch` (the worker API, port 8081, with Prometheus metrics at `/metrics`) two `scheduler`s (one elected leader runs the lease reaper and cron) and one `worker`:
-
-```sh
-curl localhost:8080/healthz   # the process is alive
-curl localhost:8080/readyz    # it can reach the database
-```
+This starts PostgreSQL 18 (TLS only, one role per service), `auth`, `jobs`, `dispatch`, two `scheduler`s (one elected leader runs the lease reaper and cron), a `worker`, and the `gateway`. The gateway at **https://localhost:8443** is the only public port; every internal call uses mTLS.
 
 ### Try the API
 
-Tokens are signed with a development key until the `auth` service exists. This prints one for a demo user:
+Log in as a seeded demo user to get a token (60 minutes). Browsers get it as an `HttpOnly` cookie instead.
 
 ```sh
-TOKEN=$(go run ./cmd/devtoken)
+K="--cacert deploy/local/certs/ca.crt"   # on Windows' built-in curl, add --ssl-no-revoke
+G=https://localhost:8443
+
+curl $K $G/v1/auth/login -d '{"email":"demo@example.com","password":"demo-password-1"}'
+TOKEN=<token from the response>
 
 # Submit. The Idempotency-Key makes retries safe: repeating it returns the same job.
-curl -X POST localhost:8080/v1/jobs -H "Authorization: Bearer $TOKEN"   -H "Idempotency-Key: order-42"   -d '{"queue":"default","type":"email.send","payload":{"to":"a@example.com"}}'
+# The demo worker runs chaos.sleep: it sleeps for "ms", then succeeds.
+curl $K $G/v1/jobs -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: nap-1"   -d '{"queue":"default","type":"chaos.sleep","payload":{"ms":500}}'
 
-curl localhost:8080/v1/jobs -H "Authorization: Bearer $TOKEN"                      # list, newest first
-curl localhost:8080/v1/jobs/<id> -H "Authorization: Bearer $TOKEN"                 # get
-curl -X POST localhost:8080/v1/jobs/<id>/cancel -H "Authorization: Bearer $TOKEN"  # cancel
-curl -X POST localhost:8080/v1/jobs/<id>/redrive -H "Authorization: Bearer $TOKEN" # retry a dead job
+curl $K $G/v1/jobs -H "Authorization: Bearer $TOKEN"                        # list, newest first
+curl $K $G/v1/jobs/<id> -H "Authorization: Bearer $TOKEN"                   # get
+curl $K -X POST $G/v1/jobs/<id>/cancel -H "Authorization: Bearer $TOKEN"    # cancel
+curl $K -X POST $G/v1/jobs/<id>/redrive -H "Authorization: Bearer $TOKEN"   # retry a dead job
 
-# A job the demo worker runs: it sleeps 500 ms, then succeeds.
-curl -X POST localhost:8080/v1/jobs -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: nap-1" \n  -d '{"queue":"default","type":"chaos.sleep","payload":{"ms":500}}'
-```
-
-Cron schedules create a job on every tick (standard 5-field cron, any IANA time zone):
-
-```sh
-curl -X POST localhost:8080/v1/schedules -H "Authorization: Bearer $TOKEN"   -d '{"name":"nightly","cron":"0 2 * * *","timezone":"Asia/Kolkata","job":{"queue":"default","type":"chaos.sleep","payload":{"ms":100}}}'
+# Cron: a job on every tick (5-field cron, any IANA time zone).
+curl $K $G/v1/schedules -H "Authorization: Bearer $TOKEN"   -d '{"name":"nightly","cron":"0 2 * * *","timezone":"Asia/Kolkata","job":{"queue":"default","type":"chaos.sleep","payload":{"ms":100}}}'
 ```
 
 | Status | Meaning |
 | --- | --- |
-| `201` | Job created |
+| `201` | Created |
 | `200` | A repeat of an earlier submit: the original job is returned |
-| `409` | That key was already used with a different request |
+| `401` | Missing, expired or invalid token |
 | `404` | No such job, or it belongs to someone else |
+| `409` | Key reused with a different request, or the job is in the wrong state |
+| `429` | Rate limit; retry after the `Retry-After` header |
 | `503` | The outcome is unknown; retry with the same key |
+
+Only admins create users (`admin@example.com` / `admin-password-1` locally):
+
+```sh
+curl $K $G/v1/auth/users -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"email":"you@example.com","password":"at-least-12-chars"}'
+```
 
 Stop and remove everything, including the database volume:
 
@@ -91,10 +94,10 @@ go vet ./...
 go test ./...
 ```
 
-The database tests are skipped unless `TEST_DATABASE_URL` points at a PostgreSQL 18 server. They create and drop their own throwaway database, so the local stack's server is safe to use:
+The database tests are skipped unless `TEST_DATABASE_URL` points at a PostgreSQL 18 server. They create and drop their own throwaway databases, so the local stack's server is safe to use:
 
 ```sh
-TEST_DATABASE_URL="postgres://taskqueue:taskqueue@localhost:5432/jobs?sslmode=disable" go test ./...
+TEST_DATABASE_URL="postgres://postgres:superuser-local-only@localhost:5432/postgres?sslmode=require" go test -race ./...
 ```
 
 After editing anything in `proto/`, regenerate the Go code. This also lints the proto files:
@@ -122,18 +125,23 @@ git release
 ## Layout
 
 ```text
+cmd/gateway/      the only public entry: TLS, JWT check, rate limit, dashboard
+cmd/auth/         login, admin-only users, JWKS
 cmd/jobs/         public job API service
 cmd/dispatch/     worker API: claim, heartbeat, complete, fail
 cmd/worker/       runs job handlers (demo: chaos.sleep)
 cmd/scheduler/    leader-elected chores: lease reaper and cron ticks
 internal/scheduler/ leader election (lease + epoch) and fenced chores
-cmd/devtoken/     prints a dev-only JWT for curl
+cmd/devcerts/     writes the local dev CA, certificates and JWT key
 internal/queue/   jobs database: submit, get, list, cancel
 internal/jobsapi/ REST handlers and input validation
 internal/dispatch/ worker API server, long-poll claims
 internal/serve/   shared HTTP server: health endpoints, graceful drain
 sdk/go/worker/    worker SDK: claim, heartbeat, drain, report results
-internal/authn/   JWT verification (EdDSA only)
+internal/authn/   JWT signing and verification (EdDSA, JWKS)
+internal/auth/    auth service: argon2id passwords, login rate limit
+internal/gateway/ gateway routing, cookie CSRF check, per-user rate limit
+internal/tlsconf/ mTLS configs from a CA
 internal/pgtest/  throwaway databases for tests
 cmd/migrate/      one-shot migration runner: migrate <database>
 migrations/       SQL migrations, one folder per database

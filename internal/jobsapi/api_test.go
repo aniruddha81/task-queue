@@ -2,7 +2,6 @@ package jobsapi
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -12,8 +11,6 @@ import (
 	"testing"
 	"time"
 	"uuid"
-
-	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/aniruddha81/task-queue/internal/authn"
 	"github.com/aniruddha81/task-queue/internal/pgtest"
@@ -58,36 +55,18 @@ func TestParseSubmit(t *testing.T) {
 
 // TestHTTP drives the real handler against a real database.
 func TestHTTP(t *testing.T) {
-	key := authn.DevKey()
-	pub := key.Public().(ed25519.PublicKey)
+	pub, key, _ := ed25519.GenerateKey(nil)
 	srv := httptest.NewServer(newAPI(t, pub))
 	defer srv.Close()
 
 	alice, bob := uuid.NewV7(), uuid.NewV7()
-	aliceTok, _ := authn.Sign(key, alice, time.Hour)
-	bobTok, _ := authn.Sign(key, bob, time.Hour)
+	aliceTok, _ := authn.Sign(key, authn.Identity{Owner: alice}, time.Hour)
+	bobTok, _ := authn.Sign(key, authn.Identity{Owner: bob}, time.Hour)
 
-	t.Run("bad tokens get 401", func(t *testing.T) {
+	t.Run("bad tokens get 401", func(t *testing.T) { // the full list is in package authn
 		_, otherKey, _ := ed25519.GenerateKey(nil)
-		wrongKey, _ := authn.Sign(otherKey, alice, time.Hour)
-		expired, _ := authn.Sign(key, alice, -2*time.Minute) // beyond the 60 s leeway
-		none, _ := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.RegisteredClaims{
-			Subject: alice.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-		}).SignedString(jwt.UnsafeAllowNoneSignatureType)
-		hmacWithPub, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-			Subject: alice.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-		}).SignedString([]byte(pub)) // classic algorithm-confusion attack
-		noExp, _ := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.RegisteredClaims{
-			Subject: alice.String(),
-		}).SignedString(key)
-		notUUID, _ := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.RegisteredClaims{
-			Subject: "alice", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-		}).SignedString(key)
-
-		for name, tok := range map[string]string{
-			"missing": "", "wrong key": wrongKey, "expired": expired, "alg none": none,
-			"HS256 with public key": hmacWithPub, "no exp": noExp, "sub not a UUID": notUUID,
-		} {
+		wrongKey, _ := authn.Sign(otherKey, authn.Identity{Owner: alice}, time.Hour)
+		for name, tok := range map[string]string{"missing": "", "wrong key": wrongKey} {
 			if code, _ := do(t, srv, "GET", "/v1/jobs", tok, "", ""); code != http.StatusUnauthorized {
 				t.Errorf("%s token: status %d, want 401", name, code)
 			}
@@ -155,11 +134,7 @@ func TestHTTP(t *testing.T) {
 }
 
 func newAPI(t *testing.T, pub ed25519.PublicKey) http.Handler {
-	v, err := authn.NewVerifier(base64.StdEncoding.EncodeToString(pub))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return New(queue.NewStore(pgtest.Migrated(t, "jobs")), v, slog.New(slog.DiscardHandler))
+	return New(queue.NewStore(pgtest.Migrated(t, "jobs")), authn.NewVerifier(pub), slog.New(slog.DiscardHandler))
 }
 
 func do(t *testing.T, srv *httptest.Server, method, path, token, key, body string) (int, []byte) {
@@ -181,12 +156,12 @@ func do(t *testing.T, srv *httptest.Server, method, path, token, key, body strin
 }
 
 func TestSchedulesHTTP(t *testing.T) {
-	key := authn.DevKey()
-	srv := httptest.NewServer(newAPI(t, key.Public().(ed25519.PublicKey)))
+	pub, key, _ := ed25519.GenerateKey(nil)
+	srv := httptest.NewServer(newAPI(t, pub))
 	defer srv.Close()
 	alice, bob := uuid.NewV7(), uuid.NewV7()
-	at, _ := authn.Sign(key, alice, time.Hour)
-	bt, _ := authn.Sign(key, bob, time.Hour)
+	at, _ := authn.Sign(key, authn.Identity{Owner: alice}, time.Hour)
+	bt, _ := authn.Sign(key, authn.Identity{Owner: bob}, time.Hour)
 
 	body := `{"name":"daily-report","cron":"0 9 * * *","timezone":"Asia/Kolkata","job":{"queue":"reports","type":"report.daily"}}`
 	code, resp := do(t, srv, "POST", "/v1/schedules", at, "", body)

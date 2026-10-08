@@ -52,12 +52,12 @@ type handler func(w http.ResponseWriter, r *http.Request, owner uuid.UUID)
 
 func (a *api) authed(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		owner, err := a.auth.Owner(r)
+		id, err := a.auth.FromRequest(r)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid or missing token")
 			return
 		}
-		h(w, r, owner)
+		h(w, r, id.Owner)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aniruddha81/task-queue/internal/serve"
 	"github.com/aniruddha81/task-queue/sdk/go/worker"
 )
 
@@ -24,6 +26,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	certs, err := serve.Certs("worker")
+	if err != nil {
+		log.Error("certificates", "err", err)
+		os.Exit(1)
+	}
 	host, _ := os.Hostname()
 	concurrency, _ := strconv.Atoi(os.Getenv("CONCURRENCY"))
 	w := worker.New(worker.Config{
@@ -33,6 +40,8 @@ func main() {
 		Name:        host,
 		Concurrency: concurrency,
 		Log:         log,
+		// mTLS to dispatch; no client timeout: claims are long polls with their own deadlines.
+		HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: certs.Client(), ForceAttemptHTTP2: true}},
 	})
 	w.Handle("chaos.sleep", sleepHandler)
 
