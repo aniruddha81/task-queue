@@ -1,0 +1,5 @@
+# LF everywhere, whatever core.autocrlf says: Go, SQL and shell scripts run on Linux.
+* text=auto eol=lf
+*.ico binary
+*.png binary
+*.svg text eol=lf

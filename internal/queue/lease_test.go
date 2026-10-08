@@ -53,7 +53,7 @@ func TestStaleTokenIsFenced(t *testing.T) {
 	if err := s.Complete(t.Context(), stale); !errors.Is(err, ErrLeaseLost) {
 		t.Errorf("stale complete: %v, want ErrLeaseLost", err)
 	}
-	if err := s.Fail(t.Context(), stale, "x", false, 0); !errors.Is(err, ErrLeaseLost) {
+	if err := s.Fail(t.Context(), stale, "x", false); !errors.Is(err, ErrLeaseLost) {
 		t.Errorf("stale fail: %v, want ErrLeaseLost", err)
 	}
 	if st, _ := s.Heartbeat(t.Context(), []Lease{stale}, 30*time.Second); st[0] != Lost {
@@ -78,7 +78,7 @@ func TestRetriedResultsAreIdempotent(t *testing.T) {
 			t.Fatalf("complete #%d: %v", i+1, err)
 		}
 	}
-	if err := s.Fail(t.Context(), l, "late", false, 0); !errors.Is(err, ErrLeaseLost) {
+	if err := s.Fail(t.Context(), l, "late", false); !errors.Is(err, ErrLeaseLost) {
 		t.Errorf("fail after complete: %v, want ErrLeaseLost", err)
 	}
 
@@ -86,7 +86,7 @@ func TestRetriedResultsAreIdempotent(t *testing.T) {
 	c = claimOne(t, s, uuid.NewV7())
 	l = Lease{c.ID, c.LeaseToken}
 	for i := range 2 {
-		if err := s.Fail(t.Context(), l, "boom", true, 0); err != nil {
+		if err := s.Fail(t.Context(), l, "boom", true); err != nil {
 			t.Fatalf("fail #%d: %v", i+1, err)
 		}
 	}
@@ -144,7 +144,7 @@ func TestClaimOnlyRegisteredTypesAndCancelOnFail(t *testing.T) {
 
 	c := claimOne(t, s, uuid.NewV7(), "image.resize")
 	s.Cancel(t.Context(), owner, c.ID) // running: only requests the cancel
-	if err := s.Fail(t.Context(), Lease{c.ID, c.LeaseToken}, "stopped", false, 0); err != nil {
+	if err := s.Fail(t.Context(), Lease{c.ID, c.LeaseToken}, "stopped", false); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.Get(t.Context(), owner, c.ID); got.State != "cancelled" {

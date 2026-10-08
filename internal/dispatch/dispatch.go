@@ -146,7 +146,7 @@ func (s *Server) Fail(ctx context.Context, req *connect.Request[workerv1.FailReq
 	if err != nil {
 		return nil, err
 	}
-	if err := result("fail", s.store.Fail(ctx, l, req.Msg.Error, req.Msg.Permanent, 0)); err != nil {
+	if err := result("fail", s.store.Fail(ctx, l, req.Msg.Error, req.Msg.Permanent)); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&workerv1.FailResponse{}), nil

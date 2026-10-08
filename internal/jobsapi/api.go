@@ -4,6 +4,7 @@
 //	GET  /v1/jobs              list, newest first (?state=&queue=&limit=&after=)
 //	GET  /v1/jobs/{id}         get
 //	POST /v1/jobs/{id}/cancel  cancel
+//	POST /v1/jobs/{id}/redrive retry a dead job with a fresh attempt budget
 package jobsapi
 
 import (
@@ -45,6 +46,7 @@ func New(store *queue.Store, auth *authn.Verifier, log *slog.Logger) http.Handle
 	mux.HandleFunc("GET /v1/jobs", a.authed(a.list))
 	mux.HandleFunc("GET /v1/jobs/{id}", a.authed(a.get))
 	mux.HandleFunc("POST /v1/jobs/{id}/cancel", a.authed(a.cancel))
+	mux.HandleFunc("POST /v1/jobs/{id}/redrive", a.authed(a.redrive))
 	return mux
 }
 
@@ -163,12 +165,24 @@ func (a *api) cancel(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 	a.respond(w, job, err)
 }
 
+func (a *api) redrive(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, queue.ErrNotFound.Error())
+		return
+	}
+	job, err := a.store.Redrive(r.Context(), owner, id)
+	a.respond(w, job, err)
+}
+
 func (a *api) respond(w http.ResponseWriter, job queue.Job, err error) {
 	switch {
 	case errors.Is(err, queue.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, queue.ErrNotCancellable):
 		writeError(w, http.StatusConflict, "job already "+job.State)
+	case errors.Is(err, queue.ErrNotDead):
+		writeError(w, http.StatusConflict, err.Error()+"; this job is "+job.State)
 	case err != nil:
 		a.log.Error("query", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

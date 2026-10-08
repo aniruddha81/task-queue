@@ -148,3 +148,45 @@ func mustUUID(t *testing.T, s string) uuid.UUID {
 	}
 	return u
 }
+
+// TestDeadlineStopsHandlerAndRetries: a handler that hangs is stopped at the job's deadline,
+// the attempt fails, the job is retried after backoff, and it ends dead after max_attempts.
+func TestDeadlineStopsHandlerAndRetries(t *testing.T) {
+	pool, url := startDispatch(t)
+	store := queue.NewStore(pool)
+	owner := mustUUID(t, "00000000-0000-7000-8000-000000000003")
+	job, _, err := store.Submit(t.Context(), queue.NewJob{Owner: owner, Key: "hang", Request: []byte(`{}`),
+		Queue: "default", Type: "test.hang", Payload: []byte(`{}`), MaxAttempts: 2, TimeoutSeconds: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	runs := 0
+	w := worker.New(worker.Config{Dispatchers: []string{url}, Cloud: "aws", Queues: []string{"default"},
+		Log: slog.New(slog.DiscardHandler)})
+	w.Handle("test.hang", func(ctx context.Context, _ worker.Job) error {
+		mu.Lock()
+		runs++
+		mu.Unlock()
+		<-ctx.Done() // hangs until the deadline stops it
+		return context.Cause(ctx)
+	})
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	defer func() { stop(); <-done }()
+
+	for range 100 {
+		if got, _ := store.Get(t.Context(), owner, job.ID); got.State == "dead" {
+			mu.Lock()
+			defer mu.Unlock()
+			if runs != 2 || got.Attempt != 2 {
+				t.Errorf("runs=%d attempt=%d, want 2 and 2", runs, got.Attempt)
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("job not dead within 10 s")
+}

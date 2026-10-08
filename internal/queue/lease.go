@@ -139,8 +139,9 @@ func (s *Store) Complete(ctx context.Context, l Lease) error {
 }
 
 // Fail records a failed attempt. The job is cancelled if a cancel was requested, dead if it
-// is out of attempts or the error is permanent, and otherwise available again after backoff.
-func (s *Store) Fail(ctx context.Context, l Lease, msg string, permanent bool, backoff time.Duration) error {
+// is out of attempts or the error is permanent, and otherwise available again after
+// retry_backoff (capped exponential, full jitter).
+func (s *Store) Fail(ctx context.Context, l Lease, msg string, permanent bool) error {
 	tag, err := s.db.Exec(ctx, `
 		WITH f AS (
 		  UPDATE jobs SET
@@ -148,7 +149,7 @@ func (s *Store) Fail(ctx context.Context, l Lease, msg string, permanent bool, b
 		                 WHEN $4 OR attempt >= max_attempts THEN 'dead'
 		                 ELSE 'available' END,
 		    finished_at = CASE WHEN cancel_requested OR $4 OR attempt >= max_attempts THEN now() END,
-		    run_at = now() + $5::interval,
+		    run_at = now() + retry_backoff(attempt),
 		    lease_token = NULL, lease_expires_at = NULL, deadline_at = NULL,
 		    last_error = $3, updated_at = now()
 		  WHERE id = $1 AND lease_token = $2 AND state = 'running'
@@ -158,7 +159,7 @@ func (s *Store) Fail(ctx context.Context, l Lease, msg string, permanent bool, b
 		SET outcome = CASE WHEN f.state = 'cancelled' THEN 'cancelled' ELSE 'failed' END,
 		    finished_at = now(), error = $3
 		FROM f WHERE a.job_id = f.id AND a.attempt = f.attempt`,
-		l.JobID, l.Token, msg, permanent, backoff)
+		l.JobID, l.Token, msg, permanent)
 	if err != nil || tag.RowsAffected() == 1 {
 		return err
 	}
@@ -199,4 +200,33 @@ func (s *Store) SeenNode(ctx context.Context, n Node) error {
 		                               last_seen_at = now()`,
 		n.ID, n.Name, n.Cloud, n.Queues, n.Types, n.Version)
 	return err
+}
+
+// Reap ends leases that expired (a crashed, paused or partitioned worker, or a passed
+// deadline), with the same outcome rules as Fail. SKIP LOCKED plus the re-check in the
+// UPDATE make it safe for any number of reapers to run at once. Returns jobs reaped.
+func (s *Store) Reap(ctx context.Context, limit int) (int, error) {
+	tag, err := s.db.Exec(ctx, `
+		WITH expired AS MATERIALIZED (
+		  SELECT id FROM jobs WHERE state = 'running' AND lease_expires_at < now()
+		  ORDER BY lease_expires_at LIMIT $1
+		  FOR UPDATE SKIP LOCKED
+		), reaped AS (
+		  UPDATE jobs j SET
+		    state = CASE WHEN j.cancel_requested THEN 'cancelled'
+		                 WHEN j.attempt >= j.max_attempts THEN 'dead'
+		                 ELSE 'available' END,
+		    finished_at = CASE WHEN j.cancel_requested OR j.attempt >= j.max_attempts THEN now() END,
+		    run_at = now() + retry_backoff(j.attempt),
+		    lease_token = NULL, lease_expires_at = NULL, deadline_at = NULL,
+		    last_error = 'lease expired', updated_at = now()
+		  FROM expired
+		  WHERE j.id = expired.id AND j.state = 'running' AND j.lease_expires_at < now()
+		  RETURNING j.id, j.attempt, j.state
+		)
+		UPDATE job_attempts a
+		SET outcome = CASE WHEN r.state = 'cancelled' THEN 'cancelled' ELSE 'lease_expired' END,
+		    finished_at = now()
+		FROM reaped r WHERE a.job_id = r.id AND a.attempt = r.attempt`, limit)
+	return int(tag.RowsAffected()), err
 }

@@ -47,6 +47,12 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
 
+  scheduler:
+    build: { context: ../.., args: { CMD: scheduler } }
+    environment: { DATABASE_URL: *db-url }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
   worker:
     build: { context: ../.., args: { CMD: worker } }
     environment:

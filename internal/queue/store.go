@@ -17,6 +17,7 @@ var (
 	ErrNotFound       = errors.New("job not found")
 	ErrKeyReused      = errors.New("idempotency key already used with a different request")
 	ErrNotCancellable = errors.New("job already finished")
+	ErrNotDead        = errors.New("only dead jobs can be redriven")
 )
 
 // Job is what users see. The lease token is deliberately absent: it belongs to workers.
@@ -146,4 +147,23 @@ func (s *Store) Cancel(ctx context.Context, owner, id uuid.UUID) (Job, error) {
 	default:
 		return job, ErrNotCancellable
 	}
+}
+
+// Redrive puts a dead job back in the queue with a fresh retry budget (its original
+// max_attempts). Attempt numbers keep increasing, so the attempt history stays intact,
+// and the effect key is unchanged, so effects from earlier attempts stay deduplicated.
+func (s *Store) Redrive(ctx context.Context, owner, id uuid.UUID) (Job, error) {
+	rows, _ := s.db.Query(ctx, `
+		UPDATE jobs SET state = 'available', run_at = now(), finished_at = NULL, updated_at = now(),
+		  max_attempts = attempt + COALESCE((request->>'max_attempts')::int, 5)
+		WHERE id = $1 AND owner_id = $2 AND state = 'dead'
+		RETURNING `+columns, id, owner)
+	job, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[Job])
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return job, err
+	}
+	if job, err = s.Get(ctx, owner, id); err != nil {
+		return Job{}, err
+	}
+	return job, ErrNotDead
 }
