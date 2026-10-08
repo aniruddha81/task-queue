@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package taskqueue.worker.v1;
+
+import "google/protobuf/duration.proto";
+
+// WorkerService is served by dispatch. Workers never talk to the database.
+// All times are durations, never timestamps: a worker's wall clock is not trusted.
+service WorkerService {
+  // Claim long-polls until at least one job is available or the request deadline passes.
+  rpc Claim(ClaimRequest) returns (ClaimResponse);
+  // Heartbeat extends every listed lease in one call.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // Complete records success. A stale lease token fails with FAILED_PRECONDITION;
+  // retrying a complete that already committed succeeds.
+  rpc Complete(CompleteRequest) returns (CompleteResponse);
+  // Fail records a failed attempt. Same fencing and retry rules as Complete.
+  rpc Fail(FailRequest) returns (FailResponse);
+}
+
+message ClaimRequest {
+  string node_id = 1;
+  string cloud = 2; // "aws" or "azure", for affinity
+  repeated string queues = 3;
+  repeated string types = 4; // only types this worker has handlers for
+  int32 max_jobs = 5;
+}
+
+message ClaimResponse {
+  repeated Job jobs = 1;
+}
+
+message Job {
+  string id = 1;
+  string queue = 2;
+  string type = 3;
+  bytes payload = 4; // JSON
+  int32 attempt = 5;
+  string lease_token = 6;
+  string effect_key = 7; // owner_id:idempotency_key; sinks deduplicate on it
+  google.protobuf.Duration lease_ttl = 8; // heartbeat well before this elapses
+  google.protobuf.Duration time_to_deadline = 9; // hard limit; heartbeats cannot extend it
+}
+
+message Lease {
+  string job_id = 1;
+  string lease_token = 2;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  repeated Lease leases = 2;
+}
+
+message HeartbeatResponse {
+  repeated LeaseStatus statuses = 1; // same order as the request's leases
+}
+
+message LeaseStatus {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_HELD = 1; // lease extended
+    STATE_LOST = 2; // stop the handler: someone else may own the job now
+    STATE_CANCEL_REQUESTED = 3; // stop the handler, then call Fail
+  }
+  State state = 1;
+}
+
+message CompleteRequest {
+  Lease lease = 1;
+}
+
+message CompleteResponse {}
+
+message FailRequest {
+  Lease lease = 1;
+  string error = 2;
+  bool permanent = 3; // dead-letter now instead of retrying
+}
+
+message FailResponse {}

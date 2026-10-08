@@ -1,0 +1,41 @@
+# Local stack: docker compose -f deploy/local/compose.yml up --build
+name: taskqueue
+
+x-db-url: &db-url postgres://taskqueue:taskqueue@postgres:5432/jobs?sslmode=disable # local only
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: taskqueue
+      POSTGRES_PASSWORD: taskqueue # local only
+      POSTGRES_DB: jobs
+    # Paused or dead clients must release their row locks within seconds.
+    command: >
+      postgres
+      -c idle_in_transaction_session_timeout=10s
+      -c tcp_keepalives_idle=10 -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql] # PG 18 images keep data under /var/lib/postgresql/18
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskqueue -d jobs"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    build: { context: ../.., args: { CMD: migrate } }
+    command: ["jobs"]
+    environment: { DATABASE_URL: *db-url }
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  jobs:
+    build: { context: ../.., args: { CMD: jobs } }
+    environment: { DATABASE_URL: *db-url }
+    ports: ["8080:8080"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:

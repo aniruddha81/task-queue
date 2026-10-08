@@ -1,0 +1,14 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/aniruddha81/task-queue/gen
+plugins:
+  # Run through `go tool`, so the generators always match the runtime versions in go.mod.
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: gen
+    opt: paths=source_relative
+  - local: ["go", "tool", "protoc-gen-connect-go"]
+    out: gen
+    opt: paths=source_relative
