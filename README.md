@@ -47,6 +47,22 @@ After editing anything in `proto/`, regenerate the Go code. This also lints the 
 go generate .
 ```
 
+## Release
+
+Work on `main`. Nothing runs when you push `main`. When `main` is ready, send it to the `release` branch:
+
+```sh
+git push origin main:release
+```
+
+That push runs CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)). Later in the plan, it will also deploy (see [deployment_plan.md](deployment_plan.md)). The push only fast-forwards, so `release` can never jump to a commit that isn't on `main`.
+
+Shortcut, after a one-time `git config alias.release "push origin main:release"`:
+
+```sh
+git release
+```
+
 ## Layout
 
 ```text

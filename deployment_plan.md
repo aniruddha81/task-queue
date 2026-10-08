@@ -82,9 +82,9 @@ flowchart LR
 
 ### Branches
 
-- **`main`:** CI only.
+- **`main`:** normal development; nothing runs on push.
 - **`release`:** auto-deploys.
-- **Branch protection on `release`:** CI must pass, linear history, no force pushes, only you can push.
+- **Branch protection on `release`:** linear history, no force pushes, only you can push.
 - **Credentials:** OIDC trust to both clouds is limited to `refs/heads/release` in the `cloud` environment, with no manual approval. GitHub stores **no secrets at all**: Traffic Manager endpoints are switched through the same Azure OIDC login.
 
 ### `release.yml`, in five automatic stages
@@ -194,7 +194,7 @@ Running all 8 VMs 24/7 costs more than running them on demand. These are estimat
 ## Files
 
 ```text
-.github/workflows/ci.yml            every push and PR to main
+.github/workflows/ci.yml            every push to release: vet, -race tests, codegen check, govulncheck, proto breaking
 .github/workflows/release.yml       push to release: verify, build, infra, deploy, probe
 .github/workflows/maintenance.yml   weekly rolling reboots, 15-minute health sweep
 deploy/release/rollout.sh           drain, deploy, smoke test, rollback (application)
