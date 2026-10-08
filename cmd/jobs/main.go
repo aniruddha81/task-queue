@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	_ "time/tzdata" // schedule time zones must work even in images without zoneinfo
 
 	"github.com/jackc/pgx/v5/pgxpool"
 

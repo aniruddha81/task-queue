@@ -49,6 +49,7 @@ services:
 
   scheduler:
     build: { context: ../.., args: { CMD: scheduler } }
+    scale: 2 # one leads; the other takes over when it dies
     environment: { DATABASE_URL: *db-url }
     depends_on:
       migrate: { condition: service_completed_successfully }

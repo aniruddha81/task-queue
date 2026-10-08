@@ -5,20 +5,18 @@
 //	GET  /v1/jobs/{id}         get
 //	POST /v1/jobs/{id}/cancel  cancel
 //	POST /v1/jobs/{id}/redrive retry a dead job with a fresh attempt budget
+//
+// and the schedule routes in schedules.go.
 package jobsapi
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"uuid"
 
 	"github.com/aniruddha81/task-queue/internal/authn"
@@ -28,7 +26,6 @@ import (
 const maxBody = 64 << 10
 
 var (
-	nameRE = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 	states = map[string]bool{"available": true, "running": true, "succeeded": true, "dead": true, "cancelled": true}
 )
 
@@ -47,6 +44,7 @@ func New(store *queue.Store, auth *authn.Verifier, log *slog.Logger) http.Handle
 	mux.HandleFunc("GET /v1/jobs/{id}", a.authed(a.get))
 	mux.HandleFunc("POST /v1/jobs/{id}/cancel", a.authed(a.cancel))
 	mux.HandleFunc("POST /v1/jobs/{id}/redrive", a.authed(a.redrive))
+	a.scheduleRoutes(mux)
 	return mux
 }
 
@@ -61,17 +59,6 @@ func (a *api) authed(h handler) http.HandlerFunc {
 		}
 		h(w, r, owner)
 	}
-}
-
-type submitBody struct {
-	Queue          string          `json:"queue"`
-	Type           string          `json:"type"`
-	Payload        json.RawMessage `json:"payload"`
-	Priority       int             `json:"priority"`
-	RunAt          *time.Time      `json:"run_at"`
-	MaxAttempts    *int            `json:"max_attempts"`
-	TimeoutSeconds *int            `json:"timeout_seconds"`
-	Affinity       *string         `json:"affinity"`
 }
 
 func (a *api) submit(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
@@ -100,48 +87,18 @@ func (a *api) submit(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 	}
 }
 
-// parseSubmit validates a submission and fills in defaults. Pure, so it is unit-tested alone.
+// parseSubmit validates a submission: the body via queue.ParseJob, plus the key.
 func parseSubmit(owner uuid.UUID, key string, raw []byte) (queue.NewJob, error) {
-	var b submitBody
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&b); err != nil {
-		return queue.NewJob{}, fmt.Errorf("invalid JSON body: %w", err)
-	}
+	j, err := queue.ParseJob(raw)
 	switch {
+	case err != nil:
+		return queue.NewJob{}, err
 	case key == "" || len(key) > 200:
 		return queue.NewJob{}, errors.New("Idempotency-Key header is required (1-200 characters)")
 	case strings.HasPrefix(key, "cron:"):
 		return queue.NewJob{}, errors.New(`Idempotency-Key may not start with "cron:"`)
-	case !nameRE.MatchString(b.Queue):
-		return queue.NewJob{}, errors.New("queue must match " + nameRE.String())
-	case !nameRE.MatchString(b.Type):
-		return queue.NewJob{}, errors.New("type must match " + nameRE.String())
-	case b.Priority < -1000 || b.Priority > 1000:
-		return queue.NewJob{}, errors.New("priority must be between -1000 and 1000")
-	case b.Affinity != nil && *b.Affinity != "aws" && *b.Affinity != "azure":
-		return queue.NewJob{}, errors.New(`affinity must be "aws", "azure" or absent`)
 	}
-	j := queue.NewJob{
-		Owner: owner, Key: key, Request: raw, Queue: b.Queue, Type: b.Type,
-		Payload: b.Payload, Priority: b.Priority, RunAt: b.RunAt, Affinity: b.Affinity,
-		MaxAttempts: 5, TimeoutSeconds: 60,
-	}
-	if len(j.Payload) == 0 {
-		j.Payload = json.RawMessage(`{}`)
-	}
-	if b.MaxAttempts != nil {
-		j.MaxAttempts = *b.MaxAttempts
-	}
-	if b.TimeoutSeconds != nil {
-		j.TimeoutSeconds = *b.TimeoutSeconds
-	}
-	if j.MaxAttempts < 1 || j.MaxAttempts > 50 {
-		return queue.NewJob{}, errors.New("max_attempts must be between 1 and 50")
-	}
-	if j.TimeoutSeconds < 1 || j.TimeoutSeconds > 3600 {
-		return queue.NewJob{}, errors.New("timeout_seconds must be between 1 and 3600")
-	}
+	j.Owner, j.Key = owner, key
 	return j, nil
 }
 

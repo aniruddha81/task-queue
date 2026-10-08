@@ -179,3 +179,60 @@ func do(t *testing.T, srv *httptest.Server, method, path, token, key, body strin
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, b
 }
+
+func TestSchedulesHTTP(t *testing.T) {
+	key := authn.DevKey()
+	srv := httptest.NewServer(newAPI(t, key.Public().(ed25519.PublicKey)))
+	defer srv.Close()
+	alice, bob := uuid.NewV7(), uuid.NewV7()
+	at, _ := authn.Sign(key, alice, time.Hour)
+	bt, _ := authn.Sign(key, bob, time.Hour)
+
+	body := `{"name":"daily-report","cron":"0 9 * * *","timezone":"Asia/Kolkata","job":{"queue":"reports","type":"report.daily"}}`
+	code, resp := do(t, srv, "POST", "/v1/schedules", at, "", body)
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, resp)
+	}
+	var sc queue.Schedule
+	json.Unmarshal(resp, &sc)
+	if !sc.NextTickAt.After(time.Now()) || sc.NextTickAt.In(time.UTC).Format("15:04") != "03:30" {
+		t.Errorf("first tick %v, want the next 09:00 IST (03:30 UTC)", sc.NextTickAt)
+	}
+
+	for name, b := range map[string]string{
+		"duplicate name":  body,
+		"bad cron":        `{"name":"x","cron":"every day","timezone":"UTC","job":{"queue":"q","type":"t"}}`,
+		"bad timezone":    `{"name":"x","cron":"* * * * *","timezone":"Mars/Base","job":{"queue":"q","type":"t"}}`,
+		"bad job":         `{"name":"x","cron":"* * * * *","timezone":"UTC","job":{"queue":"Q!","type":"t"}}`,
+		"job with run_at": `{"name":"x","cron":"* * * * *","timezone":"UTC","job":{"queue":"q","type":"t","run_at":"2030-01-01T00:00:00Z"}}`,
+	} {
+		want := http.StatusBadRequest
+		if name == "duplicate name" {
+			want = http.StatusConflict
+		}
+		if code, _ := do(t, srv, "POST", "/v1/schedules", at, "", b); code != want {
+			t.Errorf("%s: %d, want %d", name, code, want)
+		}
+	}
+
+	path := "/v1/schedules/" + sc.ID.String()
+	if code, _ := do(t, srv, "GET", path, bt, "", ""); code != http.StatusNotFound {
+		t.Errorf("bob GET: %d, want 404", code)
+	}
+	code, resp = do(t, srv, "POST", path+"/pause", at, "", "")
+	json.Unmarshal(resp, &sc)
+	if code != http.StatusOK || !sc.Paused {
+		t.Errorf("pause: %d paused=%v", code, sc.Paused)
+	}
+	code, resp = do(t, srv, "POST", path+"/resume", at, "", "")
+	json.Unmarshal(resp, &sc)
+	if code != http.StatusOK || sc.Paused || !sc.NextTickAt.After(time.Now()) {
+		t.Errorf("resume: %d paused=%v next=%v", code, sc.Paused, sc.NextTickAt)
+	}
+	if code, _ := do(t, srv, "DELETE", path, at, "", ""); code != http.StatusNoContent {
+		t.Errorf("delete: %d, want 204", code)
+	}
+	if code, _ := do(t, srv, "GET", path, at, "", ""); code != http.StatusNotFound {
+		t.Errorf("GET after delete: %d, want 404", code)
+	}
+}

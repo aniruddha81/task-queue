@@ -10,7 +10,7 @@ import (
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var (
@@ -58,9 +58,16 @@ type NewJob struct {
 	Affinity       *string
 }
 
-type Store struct{ db *pgxpool.Pool }
+// DB is what a Store runs on: a pool, or a transaction (leader chores run in a fenced one).
+type DB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
-func NewStore(db *pgxpool.Pool) *Store { return &Store{db} }
+type Store struct{ db DB }
+
+func NewStore(db DB) *Store { return &Store{db} }
 
 // Submit inserts a job, or returns the existing one for a repeated key (created=false).
 func (s *Store) Submit(ctx context.Context, j NewJob) (job Job, created bool, err error) {

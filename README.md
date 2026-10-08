@@ -4,7 +4,7 @@ A distributed job scheduler in Go, running across AWS and Azure. It never loses 
 
 It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
 
-> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Leader election and cron come next.
+> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. The chaos harness comes next.
 
 ## Use cases
 
@@ -37,7 +37,7 @@ You need Go 1.27 and Docker.
 docker compose -f deploy/local/compose.yml up --build
 ```
 
-This starts PostgreSQL 18, applies the migrations, and starts `jobs` (the API, port 8080), `dispatch` (the worker API, port 8081, with Prometheus metrics at `/metrics`) `scheduler` (the lease reaper) and one `worker`:
+This starts PostgreSQL 18, applies the migrations, and starts `jobs` (the API, port 8080), `dispatch` (the worker API, port 8081, with Prometheus metrics at `/metrics`) two `scheduler`s (one elected leader runs the lease reaper and cron) and one `worker`:
 
 ```sh
 curl localhost:8080/healthz   # the process is alive
@@ -61,6 +61,12 @@ curl -X POST localhost:8080/v1/jobs/<id>/redrive -H "Authorization: Bearer $TOKE
 
 # A job the demo worker runs: it sleeps 500 ms, then succeeds.
 curl -X POST localhost:8080/v1/jobs -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: nap-1" \n  -d '{"queue":"default","type":"chaos.sleep","payload":{"ms":500}}'
+```
+
+Cron schedules create a job on every tick (standard 5-field cron, any IANA time zone):
+
+```sh
+curl -X POST localhost:8080/v1/schedules -H "Authorization: Bearer $TOKEN"   -d '{"name":"nightly","cron":"0 2 * * *","timezone":"Asia/Kolkata","job":{"queue":"default","type":"chaos.sleep","payload":{"ms":100}}}'
 ```
 
 | Status | Meaning |
@@ -119,7 +125,8 @@ git release
 cmd/jobs/         public job API service
 cmd/dispatch/     worker API: claim, heartbeat, complete, fail
 cmd/worker/       runs job handlers (demo: chaos.sleep)
-cmd/scheduler/    background chores (so far: the lease reaper)
+cmd/scheduler/    leader-elected chores: lease reaper and cron ticks
+internal/scheduler/ leader election (lease + epoch) and fenced chores
 cmd/devtoken/     prints a dev-only JWT for curl
 internal/queue/   jobs database: submit, get, list, cancel
 internal/jobsapi/ REST handlers and input validation
