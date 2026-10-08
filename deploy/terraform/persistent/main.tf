@@ -20,8 +20,9 @@ terraform {
   }
 }
 
-variable "github_repo" {
-  default = "aniruddha81/task-queue"
+variable "github_repo_with_ids" {
+  description = "owner@owner_id/repo@repo_id, as GitHub's OIDC subject claim spells it"
+  default     = "aniruddha81@53252451/task-queue@1409923352"
 }
 
 variable "public_name" {
@@ -58,9 +59,11 @@ data "azurerm_subscription" "me" {}
 
 locals {
   location = "centralindia"
-  # GitHub's OIDC subject for jobs that use the `cloud` environment. The environment's
-  # protection rule (deployment branches: release only) is what limits it to `release`.
-  github_subject = "repo:${var.github_repo}:environment:cloud"
+  # GitHub's OIDC subject for jobs that use the `cloud` environment. GitHub now names the
+  # owner and repository with their immutable IDs too (owner@id/repo@id), so a renamed or
+  # re-created repository can't inherit this trust. The environment's protection rule
+  # (deployment branches: release only) is what limits it to `release`.
+  github_subject = "repo:${var.github_repo_with_ids}:environment:cloud"
 }
 
 # ---------- Release record: which commit is live. VMs read `current` at every boot. ----------
