@@ -163,10 +163,7 @@ make stop        # every night before go-live; `make start` the next day
 make down        # end of a cloud phase: destroy the session, then prove nothing is left
 ```
 
-Two one-time steps by hand:
-
-- restrict the GitHub environment `cloud` to the `release` branch;
-- after the first release, make the `ghcr.io/aniruddha81/task-queue/*` packages public.
+One step by hand: restrict the GitHub environment `cloud` to the `release` branch. The images need nothing: packages pushed from a public repository are public.
 
 The role map in [deploy/terraform/session/main.tf](deploy/terraform/session/main.tf) decides which VM runs what. Each VM's boot config holds no version and no secret. At every boot, `tq-converge` fetches the VM's certificates and settings with the VM's own identity (SSM on AWS, Key Vault on Azure), brings up the mesh, and runs the current release's [deploy/vm/deploy.sh](deploy/vm/deploy.sh).
 

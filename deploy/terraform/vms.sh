@@ -34,16 +34,21 @@ start)
   ;;
 sweep)
   left=0
-  report() { [ -z "$2" ] || { echo "LEFT: $1: $2"; left=1; }; }
+  # report <what> <command...>: a query that fails proves nothing, so it fails the sweep.
+  report() {
+    local out
+    out=$("${@:2}") || { echo "sweep: query failed: $1" >&2; exit 2; }
+    [ -z "$out" ] || { echo "LEFT: $1: $(echo $out)"; left=1; }
+  }
   for r in "${regions[@]}"; do
-    report "$r instances" "$(instances "$r" pending,running,stopping,stopped)"
-    report "$r elastic IPs" "$(aws ec2 describe-addresses --region "$r" --query 'Addresses[].PublicIp' --output text)"
-    report "$r unattached volumes" "$(aws ec2 describe-volumes --region "$r" --filters Name=status,Values=available --query 'Volumes[].VolumeId' --output text)"
-    report "$r snapshots" "$(aws ec2 describe-snapshots --region "$r" --owner-ids self --query 'Snapshots[].SnapshotId' --output text)"
-    report "$r VPCs" "$(aws ec2 describe-vpcs --region "$r" --filters Name=tag:stack,Values=session --query 'Vpcs[].VpcId' --output text)"
+    report "$r instances" instances "$r" pending,running,stopping,stopped
+    report "$r elastic IPs" aws ec2 describe-addresses --region "$r" --query 'Addresses[].PublicIp' --output text
+    report "$r unattached volumes" aws ec2 describe-volumes --region "$r" --filters Name=status,Values=available --query 'Volumes[].VolumeId' --output text
+    report "$r snapshots" aws ec2 describe-snapshots --region "$r" --owner-ids self --query 'Snapshots[].SnapshotId' --output text
+    report "$r VPCs" aws ec2 describe-vpcs --region "$r" --filters Name=tag:stack,Values=session --query 'Vpcs[].VpcId' --output text
   done
-  report "Azure $rg" "$(az resource list -g $rg --query '[].name' -o tsv | tr '\n' ' ')"
-  report "Azure disks" "$(az disk list --query '[].name' -o tsv | tr '\n' ' ')"
+  report "Azure $rg" az resource list -g $rg --query '[].name' -o tsv
+  report "Azure disks" az resource list --resource-type Microsoft.Compute/disks --query '[].name' -o tsv
   [ $left = 0 ] && echo "sweep: nothing left"
   exit $left
   ;;

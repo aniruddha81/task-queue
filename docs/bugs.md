@@ -2,6 +2,36 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-08 · The sweep reported "nothing left" when it couldn't look (tooling bug)
+
+**Found by:** the first `make down` in the cloud (week 10). The sweep printed an Azure CLI usage error, `the following arguments are required: --resource-group`, and then `sweep: nothing left`.
+
+**Cause:** each check captured a query's output and treated empty output as "clean". A query that failed printed nothing to stdout, so it counted as a pass.
+
+**Fix:** each query runs inside the check, and a failed query fails the sweep with exit code 2. The disk check now uses a query that needs no resource group. With the CLIs taken off `PATH`, the sweep now fails, where it used to pass.
+
+**Lesson:** this is the checker problem again: a check that can't see must not report what it didn't see. It applies to cleanup scripts as much as to the chaos checker.
+
+## 2026-10-08 · The first cloud deploy couldn't sign in: GitHub's OIDC subject now carries IDs
+
+**Found by:** the first push to `release` (week 10). Verify and build passed, then `configure-aws-credentials` failed with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
+
+**Cause:** the trust policies (the AWS role and the Azure federated credential) expected the documented subject `repo:aniruddha81/task-queue:environment:cloud`. CloudTrail's refused request showed what GitHub actually sent: `repo:aniruddha81@53252451/task-queue@1409923352:environment:cloud`. GitHub now qualifies the owner and the repository with their immutable IDs.
+
+**Fix:** both trusts use the ID-qualified subject. This is also safer: a deleted and re-created repository with the same name can't inherit the trust.
+
+**Lesson:** read the refused request, not the documentation. CloudTrail recorded the exact claim; guessing would have meant loosening the condition to a wildcard.
+
+## 2026-10-08 · The chaos run in CI could start before `jobs` had auth's keys (harness bug)
+
+**Found by:** the second release run (week 10). The chaos step failed within one second, before any load, after an identical run had passed an hour earlier.
+
+**Cause:** CI waited for the gateway's `/readyz`, which covers only the gateway. In Compose, `jobs` starts before `auth` and retries its JWKS fetch every second until it gets the keys, rejecting every request meanwhile. The gateway starts after both, so it can be ready while `jobs` is not, and the harness's first call (creating its cron schedule) wasn't retried. Neither the job log (sign-in only) nor a local run (where `jobs` gets the keys at once) showed it directly; this is the only path that fails in under a second.
+
+**Fix:** the harness retries schedule creation for up to 30 s, but only on 502 and 401. Neither creates a schedule, so a retry can't make a duplicate. CI also turns the harness's failure lines into workflow annotations, which can be read without signing in. The next release's chaos run passed.
+
+**Lesson:** "ready" has to mean ready for the caller's first request, not ready at the front door.
+
 ## 2026-10-08 · The chaos harness's own network fault never fully healed (harness bug)
 
 **Found by:** the first chaos run after the HTTP/2 fix. 1,501 jobs were still unfinished after quiescing, and the workers logged `lookup dispatch: no such host`, although the dispatch container was running and attached to the network.

@@ -29,8 +29,7 @@ bootstrap:
 	$(P) apply
 	for v in aws_role_arn azure_client_id azure_tenant_id azure_subscription_id; do \
 	  gh variable set "$${v^^}" --body "$$($(P) output -raw $$v)"; done
-	@echo "Once, by hand: GitHub > Settings > Environments > cloud > deployment branches: release only;"
-	@echo "and after the first release, make each ghcr.io/aniruddha81/task-queue/* package public."
+	@echo "Once, by hand: GitHub > Settings > Environments > cloud > deployment branches: release only."
 
 up:
 	$(S) init -input=false -backend-config=bucket=$(STATE)
