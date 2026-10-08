@@ -10,7 +10,7 @@ Oct 8, 2026. Act 1 layout from the role map: `svc-a`, `work-a`, `pg-a` and `ops-
 | `ping -M do -s 1352` across the mesh (MTU 1380 fits) | ✅ every VM to every VM, 0% loss |
 | The sweep finds nothing left after `make down` | ✅ both rounds, after fixing the sweep itself ([bug diary](../bugs.md)) |
 | A push to `release` deploys in place | ✅ releases `34a614a` and `f72a5ad`: verify, chaos run, 9 multi-arch images, rolling deploy, smoke test |
-| A deliberately broken release rolls back on its own | ⏳ not yet run: pushing a broken release needs the owner's go-ahead |
+| A deliberately broken release rolls back on its own | ✅ `236fe84` (below) |
 
 ## Rebuild from scratch
 
@@ -22,6 +22,18 @@ The VMs' boot config holds no version. After `make up`, each VM fetches its own 
 | 2 | 2 m 24 s | nothing left | 1 m 39 s | 3 m 00 s |
 
 During convergence, services that start before their dependencies fail and retry: `auth` restarts until `ops-a` has run the migrations, and `tq-converge.service` retries every 20 s. No ordering between VMs is needed.
+
+## Automatic rollback
+
+Release `236fe84` was broken on purpose: in the cloud only, `jobs` listened on port 9999 while its readiness check used 8080. CI and the chaos run passed, because neither uses the cloud's Compose files. Then the deploy:
+
+| Time (UTC) | Public `/version` | What happened |
+| --- | --- | --- |
+| before | `f72a5ad` | the current release |
+| 18:35:43 | `236fe84` | `svc-a`'s gateway restarted on the new release; then `jobs` never became ready |
+| 18:39:23 | `f72a5ad` | `rollout.sh` redeployed the previous release everywhere and smoke-tested it |
+
+The workflow failed with `release 236fe84 failed; rolling back to f72a5ad`. The release record kept `current = f72a5ad` in both SSM and Key Vault, and jobs ran in both clouds afterwards. Act 1 has one gateway, so the bad release was public for 3 m 40 s; Act 2's drain protocol and twin services (week 12) are what remove that window.
 
 ## Mesh (WireGuard, MTU 1380)
 
