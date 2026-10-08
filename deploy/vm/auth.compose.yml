@@ -1,0 +1,13 @@
+# Role auth (deploy.sh sets IMAGE, TAG and VERSION; the rest comes from /etc/tq/tq.env).
+services:
+  auth:
+    image: ${IMAGE}/auth:${TAG}
+    network_mode: host
+    restart: unless-stopped
+    volumes: ["/etc/tq/certs:/certs:ro"]
+    environment:
+      TLS_DIR: /certs
+      VERSION: ${VERSION}
+      DATABASE_URL: ${AUTH_DB_URL}
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+      SEED_USERS: ${SEED_USERS} # registration is off in the cloud

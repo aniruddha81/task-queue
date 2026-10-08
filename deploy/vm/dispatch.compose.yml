@@ -1,0 +1,11 @@
+# Role dispatch (deploy.sh sets IMAGE, TAG and VERSION; the rest comes from /etc/tq/tq.env).
+services:
+  dispatch:
+    image: ${IMAGE}/dispatch:${TAG}
+    network_mode: host
+    restart: unless-stopped
+    volumes: ["/etc/tq/certs:/certs:ro"]
+    environment:
+      TLS_DIR: /certs
+      VERSION: ${VERSION}
+      DATABASE_URL: ${JOBS_DB_URL}

@@ -1,5 +1,7 @@
 # Each node sets PATRONI_NAME, PATRONI_RESTAPI_CONNECT_ADDRESS and
-# PATRONI_POSTGRESQL_CONNECT_ADDRESS in compose; everything else is shared.
+# PATRONI_POSTGRESQL_CONNECT_ADDRESS in compose; everything else is shared. The cloud also
+# overrides PATRONI_ETCD3_HOSTS and the PATRONI_SUPERUSER/REPLICATION_PASSWORD (Patroni reads
+# PATRONI_* environment variables over this file).
 scope: taskqueue
 namespace: /service/
 

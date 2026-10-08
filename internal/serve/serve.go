@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,9 +25,13 @@ func Certs(name string) (*tlsconf.Bundle, error) {
 	return tlsconf.Load(dir, name)
 }
 
-// Health adds GET /healthz (the process is alive) and GET /readyz (every check passes).
+// Health adds GET /healthz (the process is alive), GET /readyz (every check passes) and
+// GET /version ($VERSION, the release commit; the deploy checks it after a rollout).
 func Health(mux *http.ServeMux, ready ...func(context.Context) error) {
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, os.Getenv("VERSION"))
+	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		for _, check := range ready {
 			if err := check(r.Context()); err != nil {

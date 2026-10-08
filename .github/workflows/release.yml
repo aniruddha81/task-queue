@@ -1,0 +1,119 @@
+# git push origin main:release  ->  tested, built and deployed in place, with rollback.
+# Stages (deployment_plan.md): verify, build, deploy. The infrastructure stage (week 13) and
+# the external no-retry probe (week 12) join later.
+name: release
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Redeploy an earlier commit (full SHA): skips verify, reuses its images"
+        required: false
+
+concurrency: { group: deploy-cloud, cancel-in-progress: false } # one rollout at a time, never cut short
+permissions: { contents: read }
+
+env:
+  SHA: ${{ inputs.sha || github.sha }}
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  verify:
+    if: ${{ !inputs.sha }}
+    uses: ./.github/workflows/ci.yml
+
+  # A short chaos run on local Compose: the same checker, every guarantee, before any deploy.
+  chaos:
+    if: ${{ !inputs.sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go run ./cmd/devcerts
+      - run: docker compose -f deploy/local/compose.yml up --build -d
+      - name: wait for the gateway
+        run: timeout 300 bash -c 'until curl -fsS --cacert deploy/local/certs/ca.crt https://localhost:8443/readyz; do sleep 3; done'
+      - run: go run ./cmd/torture -duration 5m -quiesce 5m -out chaos-report
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-report
+          path: chaos-report
+      - if: failure()
+        run: docker compose -f deploy/local/compose.yml logs --tail 200
+
+  # One multi-arch image per binary (AWS VMs are arm64, Azure's amd64), tagged with the
+  # commit. An existing tag is never overwritten: a redeploy reuses it.
+  build:
+    needs: [verify, chaos]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    strategy:
+      matrix:
+        include:
+          - { image: gateway, context: ., target: gateway }
+          - { image: auth, context: ., target: app }
+          - { image: jobs, context: ., target: app }
+          - { image: dispatch, context: ., target: app }
+          - { image: scheduler, context: ., target: app }
+          - { image: worker, context: ., target: app }
+          - { image: sinks, context: ., target: app }
+          - { image: migrate, context: ., target: app }
+          - { image: patroni, context: deploy/local/patroni, target: "" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: tag
+        run: |
+          if docker manifest inspect "$IMAGE/${{ matrix.image }}:$SHA" >/dev/null 2>&1; then
+            echo "exists=true" >>"$GITHUB_OUTPUT"
+          fi
+      - if: ${{ !steps.tag.outputs.exists }}
+        uses: docker/setup-qemu-action@v3 # only the patroni image runs apt under emulation
+      - if: ${{ !steps.tag.outputs.exists }}
+        uses: docker/setup-buildx-action@v3
+      - if: ${{ !steps.tag.outputs.exists }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          target: ${{ matrix.target }}
+          build-args: CMD=${{ matrix.image }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}/${{ matrix.image }}:${{ env.SHA }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # Rolling deploy over Run Command, smoke test through the public name, automatic rollback.
+  # OIDC only: the cloud roles trust this repository's `cloud` environment, which only the
+  # release branch may use. GitHub stores no cloud secret.
+  deploy:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: cloud
+    timeout-minutes: 90
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ap-south-1
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: bash deploy/release/rollout.sh "$SHA"

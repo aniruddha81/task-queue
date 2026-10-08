@@ -4,7 +4,7 @@ A distributed job scheduler in Go, running across AWS and Azure. It never loses 
 
 It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
 
-> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live, and PostgreSQL fails over automatically (Patroni) with zero acknowledged jobs lost. The cloud phases come next.
+> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live, and PostgreSQL fails over automatically (Patroni) with zero acknowledged jobs lost. The cloud infrastructure (Terraform for AWS and Azure, a WireGuard mesh) and the release pipeline (rolling deploys with smoke test and rollback) are written but not yet applied to the cloud.
 
 ## Use cases
 
@@ -135,13 +135,46 @@ Work on `main`. Nothing runs when you push `main`. When `main` is ready, send it
 git push origin main:release
 ```
 
-That push runs CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)). Later in the plan, it will also deploy (see [deployment_plan.md](deployment_plan.md)). The push only fast-forwards, so `release` can never jump to a commit that isn't on `main`.
+That push runs [release.yml](.github/workflows/release.yml), which:
+
+1. **verifies:** runs CI ([ci.yml](.github/workflows/ci.yml)) and a 5-minute chaos run on local Compose;
+2. **builds** one multi-arch image per binary, tagged with the commit;
+3. **deploys** in place, one VM at a time. Every service must report the new version as ready before the next one starts. A smoke test then runs one job per cloud through the public name.
+
+If any step fails, the previous release is redeployed the same way. To redeploy an earlier commit, run the workflow by hand with its SHA. See [deployment_plan.md](deployment_plan.md).
+
+The push only fast-forwards, so `release` can never jump to a commit that isn't on `main`.
 
 Shortcut, after a one-time `git config alias.release "push origin main:release"`:
 
 ```sh
 git release
 ```
+
+## Run it in the cloud
+
+AWS Mumbai and Azure Central India, joined by a WireGuard mesh. The public address is `https://tq-aniruddha81.trafficmanager.net`, with a Let's Encrypt certificate that the gateway obtains itself. You need Terraform 1.11 or later, plus the `aws`, `az` and `gh` CLIs, all signed in, along with `jq`, `curl` and `make` (Linux, macOS or WSL).
+
+```sh
+make bootstrap   # once: state bucket, persistent stack (Traffic Manager, Key Vault, CI's OIDC roles, budget)
+make up          # each cloud session: VMs from the role map, mesh, firewalls
+git release      # deploy (the first release also seeds the users)
+make stop        # every night before go-live; `make start` the next day
+make down        # end of a cloud phase: destroy the session, then prove nothing is left
+```
+
+Two one-time steps by hand:
+
+- restrict the GitHub environment `cloud` to the `release` branch;
+- after the first release, make the `ghcr.io/aniruddha81/task-queue/*` packages public.
+
+The role map in [deploy/terraform/session/main.tf](deploy/terraform/session/main.tf) decides which VM runs what. Each VM's boot config holds no version and no secret. At every boot, `tq-converge` fetches the VM's certificates and settings with the VM's own identity (SSM on AWS, Key Vault on Azure), brings up the mesh, and runs the current release's [deploy/vm/deploy.sh](deploy/vm/deploy.sh).
+
+Admin access goes over the mesh only; no SSH port is open. Put `admin_wg_public_key` (and optionally `admin_ssh_public_key`) in `deploy/terraform/session/terraform.tfvars`, then `terraform -chdir=deploy/terraform/session output -raw admin_wg_conf` gives your laptop's WireGuard config.
+
+The seeded logins: `terraform -chdir=deploy/terraform/session output users`.
+
+`terraform -chdir=deploy/terraform/session test` checks the role map's wiring against mocked clouds: who calls whom, the rollout order, and which VM receives which secret.
 
 ## Layout
 
@@ -174,6 +207,9 @@ migrations/       SQL migrations, one folder per database
 proto/            worker API (Protobuf)
 gen/              Go code generated from proto/ (do not edit)
 deploy/local/     Docker Compose for local development (Patroni + etcd, monitoring)
+deploy/terraform/ persistent/ and session/ stacks; vms.sh (nightly stop/start, sweep)
+deploy/vm/        per-VM deploy.sh and one Compose file per role
+deploy/release/   rollout.sh: rolling deploy, smoke test, rollback
 web/              Next.js dashboard (static export, served by the gateway)
 docs/results/     measurements and checks (e.g. cloud accounts)
 ```

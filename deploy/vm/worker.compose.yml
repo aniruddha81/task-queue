@@ -1,0 +1,17 @@
+# Role worker (deploy.sh sets IMAGE, TAG and VERSION; the rest comes from /etc/tq/tq.env).
+services:
+  worker:
+    image: ${IMAGE}/worker:${TAG}
+    network_mode: host
+    restart: unless-stopped
+    volumes: ["/etc/tq/certs:/certs:ro"]
+    environment:
+      TLS_DIR: /certs
+      VERSION: ${VERSION}
+      DISPATCHERS: ${DISPATCHERS} # nearest first, the other cloud's as fallback
+      CLOUD: ${CLOUD}
+      CONCURRENCY: 8
+      SINKS_URL: ${SINKS_URL}
+      SMTP_ADDR: ${SMTP_ADDR}
+      WEBHOOK_ALLOW: ${WEBHOOK_ALLOW}
+    stop_grace_period: 1m # drain: running jobs finish before the container stops

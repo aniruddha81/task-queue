@@ -1,0 +1,19 @@
+# Role gateway: the public entry point on 443, with a Let's Encrypt certificate for the
+# Traffic Manager name (deploy.sh sets IMAGE, TAG and VERSION; the rest comes from /etc/tq/tq.env).
+services:
+  gateway:
+    image: ${IMAGE}/gateway:${TAG}
+    network_mode: host
+    restart: unless-stopped
+    volumes: ["/etc/tq/certs:/certs:ro", "acme:/acme"]
+    environment:
+      TLS_DIR: /certs
+      VERSION: ${VERSION}
+      ADDR: ":443"
+      AUTH_URL: ${AUTH_URL}
+      JOBS_URL: ${JOBS_URL}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN}
+      ACME_DOMAIN: ${ACME_DOMAIN}
+
+volumes:
+  acme: # the certificate survives restarts and deploys

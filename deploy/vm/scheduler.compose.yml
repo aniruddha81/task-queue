@@ -1,0 +1,12 @@
+# Role scheduler: one per VM; the elected leader runs cron and the reaper (deploy.sh sets
+# IMAGE, TAG and VERSION; the rest comes from /etc/tq/tq.env).
+services:
+  scheduler:
+    image: ${IMAGE}/scheduler:${TAG}
+    network_mode: host
+    restart: unless-stopped
+    volumes: ["/etc/tq/certs:/certs:ro"]
+    environment:
+      TLS_DIR: /certs
+      VERSION: ${VERSION}
+      DATABASE_URL: ${JOBS_DB_URL}

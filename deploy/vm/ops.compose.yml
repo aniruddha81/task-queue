@@ -1,0 +1,51 @@
+# Role ops: test infrastructure, never faulted. The sinks (with their own Postgres),
+# Mailpit, Prometheus and Grafana. Grafana and Mailpit are reachable over the mesh only.
+services:
+  sinks-postgres:
+    image: postgres:18
+    network_mode: host
+    restart: unless-stopped
+    command: ["postgres", "-p", "5433", "-c", "listen_addresses=localhost"]
+    environment: { POSTGRES_PASSWORD: "${SINKS_DB_PASSWORD}", POSTGRES_DB: sinks }
+    volumes: ["sinksdata:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5433 -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  sinks:
+    image: ${IMAGE}/sinks:${TAG}
+    network_mode: host
+    restart: unless-stopped
+    volumes: ["/etc/tq/certs:/certs:ro"]
+    environment: { TLS_DIR: /certs, VERSION: "${VERSION}", DATABASE_URL: "${SINKS_DB_URL}" }
+    depends_on: { sinks-postgres: { condition: service_healthy } }
+
+  mailpit:
+    image: axllent/mailpit:v1.29
+    network_mode: host
+    restart: unless-stopped
+    environment: { MP_MAX_MESSAGES: 0 } # keep every message: the checker counts them all
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /etc/tq/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /etc/tq/certs:/certs:ro
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      PROMETHEUS_URL: http://localhost:9090
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/task-queue.json
+    volumes: ["../local/grafana/provisioning:/etc/grafana/provisioning:ro"]
+
+volumes:
+  sinksdata:

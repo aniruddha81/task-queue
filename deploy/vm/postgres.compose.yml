@@ -1,0 +1,23 @@
+# Role postgres: PostgreSQL 18 under Patroni, the same image as local Compose
+# (deploy/local/patroni). Services find the primary with target_session_attrs=read-write.
+services:
+  patroni:
+    image: ${IMAGE}/patroni:${TAG}
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 2m
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - /etc/tq/certs:/certs:ro
+    environment:
+      PATRONI_NAME: ${VM_NAME}
+      PATRONI_RESTAPI_CONNECT_ADDRESS: ${VM_NAME}:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: ${VM_NAME}:5432
+      PATRONI_ETCD3_HOSTS: ${ETCD_HOSTS}
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD}
+      JOBS_DB_PASSWORD: ${JOBS_DB_PASSWORD} # used once, when the cluster is bootstrapped
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD}
+
+volumes:
+  pgdata:

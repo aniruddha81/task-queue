@@ -1,0 +1,50 @@
+#cloud-config
+# Bootstrap only. No release version and no secret lives here, so a new commit never
+# replaces a VM: at every boot tq-converge fetches this VM's files and brings it to the
+# release recorded in SSM (AWS) or Key Vault (Azure).
+package_update: true
+packages: [docker.io, docker-compose-v2, wireguard-tools, jq, curl]
+
+write_files:
+  - path: /etc/tq/vm.env
+    content: |
+      VM_NAME=${name}
+      CLOUD=${cloud}
+      REPO=${repo}
+      SSM_REGION=${ssm_region}
+      VAULT=${vault}
+  - path: /usr/local/bin/tq-converge
+    permissions: "0755"
+    content: |
+      ${indent(6, converge)}
+  - path: /etc/systemd/system/tq-converge.service
+    content: |
+      [Unit]
+      Description=Bring this VM to the current task-queue release
+      Wants=network-online.target
+      After=network-online.target docker.service
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/tq-converge
+      # Until Terraform's files and the VM's permissions exist (role assignments take minutes).
+      Restart=on-failure
+      RestartSec=20
+      [Install]
+      WantedBy=multi-user.target
+  # Containers use the host network; the gateway (non-root) binds 443.
+  - path: /etc/sysctl.d/90-tq.conf
+    content: |
+      net.ipv4.ip_unprivileged_port_start = 443
+  # Rotated container logs, so a chatty service can't fill the disk.
+  - path: /etc/docker/daemon.json
+    content: |
+      {"log-driver": "local"}
+
+runcmd:
+  - sysctl --system
+%{ if cloud == "aws" ~}
+  - snap install aws-cli --classic
+%{ endif ~}
+  - systemctl daemon-reload
+  - systemctl enable tq-converge.service
+  - systemctl start --no-block tq-converge.service

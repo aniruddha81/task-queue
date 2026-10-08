@@ -1,0 +1,20 @@
+[Interface]
+Address = ${ip}/24
+ListenPort = 51820
+PrivateKey = ${key}
+MTU = 1380
+%{ for p in peers ~}
+
+[Peer]
+# ${p.name}
+PublicKey = ${p.key}
+AllowedIPs = ${p.ip}/32
+Endpoint = ${p.endpoint}:51820
+%{ endfor ~}
+%{ if admin_key != "" ~}
+
+[Peer]
+# admin laptop: it roams, so it has no endpoint here; it connects to us
+PublicKey = ${admin_key}
+AllowedIPs = 10.99.0.2/32
+%{ endif ~}

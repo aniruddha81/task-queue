@@ -154,7 +154,7 @@ While the rollout runs, a separate job on a GitHub-hosted runner, outside both c
 | OS security patches | `unattended-upgrades`, with no automatic reboot | None |
 | Reboots (when `/var/run/reboot-required` exists) | A weekly `maintenance.yml` reboots VMs one at a time, with the same drain, reboot, ready, next steps. Database VMs go replica first, then a switchover. | None |
 | Postgres minor upgrade | Bump the image tag in the repo and push to `release`; Patroni does the rolling restart | None |
-| Certificates | Both gateways use Go's `certmagic` library with **shared storage in Postgres**. They obtain and renew one Let's Encrypt certificate for the Traffic Manager name automatically, and either gateway can answer the validation request. Each gateway keeps a copy on disk, so a database outage doesn't affect TLS. | None |
+| Certificates | Both gateways use Go's `certmagic` library with **shared storage in Postgres**. They obtain and renew one Let's Encrypt certificate for the Traffic Manager name automatically, and either gateway can answer the validation request. Each gateway keeps a copy on disk, so a database outage doesn't affect TLS. *Built with `golang.org/x/crypto/acme/autocert` (already a dependency) over TLS-ALPN-01 on 443, so no port 80; until week 12's second gateway, the cache is the gateway's own volume.* | None |
 | Unhealthy VM | The `maintenance.yml` health sweep (every 15 minutes) replaces any VM whose health check has failed for 10 minutes, using the rolling replace | None, because its twin serves meanwhile |
 | Uptime monitoring | Traffic Manager's health-probe history, plus a probe workflow on a GitHub-hosted runner every 15 minutes that emails you on failure | — |
 

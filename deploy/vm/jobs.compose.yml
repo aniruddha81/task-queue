@@ -1,0 +1,12 @@
+# Role jobs (deploy.sh sets IMAGE, TAG and VERSION; the rest comes from /etc/tq/tq.env).
+services:
+  jobs:
+    image: ${IMAGE}/jobs:${TAG}
+    network_mode: host
+    restart: unless-stopped
+    volumes: ["/etc/tq/certs:/certs:ro"]
+    environment:
+      TLS_DIR: /certs
+      VERSION: ${VERSION}
+      DATABASE_URL: ${JOBS_DB_URL}
+      JWKS_URL: ${AUTH_URL}/.well-known/jwks.json

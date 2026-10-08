@@ -1,0 +1,18 @@
+# Scrapes over mTLS across the mesh, like every other internal call. Rendered by Terraform.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+%{ for job, targets in jobs ~}
+  - job_name: ${job}
+    scheme: https
+    tls_config:
+      ca_file: /certs/ca.crt
+      cert_file: /certs/prometheus.crt
+      key_file: /certs/prometheus.key
+    static_configs:
+%{ for t in targets ~}
+      - targets: ["${t.target}"]
+        labels: { vm: ${t.vm}, cloud: ${t.cloud} }
+%{ endfor ~}
+%{ endfor ~}

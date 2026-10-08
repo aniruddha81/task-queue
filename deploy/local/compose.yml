@@ -227,6 +227,7 @@ services:
     image: grafana/grafana:13.2.3
     restart: unless-stopped
     environment:
+      PROMETHEUS_URL: http://prometheus:9090
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/task-queue.json
