@@ -69,7 +69,14 @@ func (l *load) setup(ctx context.Context) error {
 	// A cron schedule ticking every minute, starting 3 minutes in the past so the leader
 	// has catch-up work from the first second.
 	body := fmt.Sprintf(`{"name":"torture-%s","cron":"* * * * *","timezone":"UTC","job":{"queue":"default","type":"report.daily"}}`, l.runID)
+	// A just-started stack may not reach jobs yet (502), or jobs may not have auth's keys
+	// yet (401). Neither creates a schedule, so retrying them can't make a duplicate.
 	code, resp, err := l.post(ctx, "/v1/schedules", "", []byte(body))
+	for wait := time.Second; err == nil && (code == http.StatusBadGateway || code == http.StatusUnauthorized) && wait < 30*time.Second; wait *= 2 {
+		log.Printf("create schedule: %d %v; retrying", code, err)
+		time.Sleep(wait)
+		code, resp, err = l.post(ctx, "/v1/schedules", "", []byte(body))
+	}
 	if err != nil || code != http.StatusCreated {
 		return fmt.Errorf("create schedule: %d %s %v", code, resp, err)
 	}

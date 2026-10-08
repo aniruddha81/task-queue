@@ -37,7 +37,13 @@ jobs:
       - run: docker compose -f deploy/local/compose.yml up --build -d
       - name: wait for the gateway
         run: timeout 300 bash -c 'until curl -fsS --cacert deploy/local/certs/ca.crt https://localhost:8443/readyz; do sleep 3; done'
-      - run: go run ./cmd/torture -duration 5m -quiesce 5m -out chaos-report
+      - name: chaos run
+        run: |
+          go run ./cmd/torture -duration 5m -quiesce 5m -out chaos-report 2>&1 | tee torture.log || {
+            # Annotations are readable without signing in, unlike job logs.
+            grep -E 'FAIL|fatal|rror|create schedule|login' torture.log | tail -20 | sed 's/^/::error::/'
+            exit 1
+          }
       - if: always()
         uses: actions/upload-artifact@v4
         with:
