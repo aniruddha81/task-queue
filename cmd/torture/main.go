@@ -41,7 +41,7 @@ func main() {
 	flag.StringVar(&c.ca, "ca", "deploy/local/certs/ca.crt", "CA certificate for the gateway")
 	flag.StringVar(&c.email, "email", "demo@example.com", "user to submit as")
 	flag.StringVar(&c.password, "password", "demo-password-1", "that user's password")
-	flag.StringVar(&c.jobsDB, "jobs-db", "postgres://postgres:superuser-local-only@localhost:5432/jobs?sslmode=require", "jobs database (read by the checker)")
+	flag.StringVar(&c.jobsDB, "jobs-db", "postgres://postgres:superuser-local-only@localhost:5432,localhost:5434/jobs?sslmode=require&target_session_attrs=read-write", "jobs database (read by the checker)")
 	flag.StringVar(&c.sinksDB, "sinks-db", "postgres://postgres:sinks-local-only@localhost:5433/sinks?sslmode=disable", "sinks database")
 	flag.StringVar(&c.mailpit, "mailpit", "http://localhost:8025", "Mailpit API")
 	flag.StringVar(&c.project, "project", "taskqueue", "docker compose project")

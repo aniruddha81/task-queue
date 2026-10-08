@@ -23,6 +23,7 @@ import (
 
 	"github.com/aniruddha81/task-queue/internal/authn"
 	"github.com/aniruddha81/task-queue/internal/mutant"
+	"github.com/aniruddha81/task-queue/internal/pgretry"
 	"github.com/aniruddha81/task-queue/internal/queue"
 )
 
@@ -96,7 +97,15 @@ func (a *api) submit(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 		writeJSON(w, http.StatusCreated, queue.Job{ID: id, State: "available"})
 		return
 	}
-	job, created, err := a.store.Submit(r.Context(), j)
+	type result struct {
+		job     queue.Job
+		created bool
+	}
+	res, err := pgretry.Do(r.Context(), func() (result, error) { // safe: the key makes it idempotent
+		job, created, err := a.store.Submit(r.Context(), j)
+		return result{job, created}, err
+	})
+	job, created := res.job, res.created
 	switch {
 	case errors.Is(err, queue.ErrKeyReused):
 		writeError(w, http.StatusConflict, err.Error())
@@ -142,7 +151,7 @@ func (a *api) cancel(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 		writeError(w, http.StatusNotFound, queue.ErrNotFound.Error())
 		return
 	}
-	job, err := a.store.Cancel(r.Context(), owner, id)
+	job, err := pgretry.Do(r.Context(), func() (queue.Job, error) { return a.store.Cancel(r.Context(), owner, id) })
 	a.respond(w, job, err)
 }
 
@@ -152,7 +161,7 @@ func (a *api) redrive(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 		writeError(w, http.StatusNotFound, queue.ErrNotFound.Error())
 		return
 	}
-	job, err := a.store.Redrive(r.Context(), owner, id)
+	job, err := pgretry.Do(r.Context(), func() (queue.Job, error) { return a.store.Redrive(r.Context(), owner, id) })
 	a.respond(w, job, err)
 }
 

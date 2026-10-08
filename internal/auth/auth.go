@@ -25,6 +25,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/aniruddha81/task-queue/internal/authn"
+	"github.com/aniruddha81/task-queue/internal/pgretry"
 )
 
 const (
@@ -93,8 +94,10 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request) {
 	var id uuid.UUID
 	var hash string
 	var admin bool
-	err := s.db.QueryRow(r.Context(), `SELECT id, password_hash, admin FROM users WHERE email = $1`, c.Email).
-		Scan(&id, &hash, &admin)
+	_, err := pgretry.Do(r.Context(), func() (struct{}, error) { // rides out a database failover
+		return struct{}{}, s.db.QueryRow(r.Context(), `SELECT id, password_hash, admin FROM users WHERE email = $1`, c.Email).
+			Scan(&id, &hash, &admin)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		checkPassword(c.Password, s.dummy) // same cost as a real check: no user enumeration by timing
 		writeError(w, http.StatusUnauthorized, "invalid email or password")

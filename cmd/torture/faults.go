@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -15,7 +16,7 @@ import (
 // heal() reverts everything at the end, and restart policies cover a harness crash.
 type fault struct {
 	name    string
-	targets []string // compose service-index names, e.g. worker-1
+	targets []string // compose service-index names, e.g. worker-1; or role "primary"/"replica"
 	min     time.Duration
 	max     time.Duration
 	apply   func(container string) error
@@ -43,7 +44,10 @@ func newFaults(c config) *faults {
 			func(ct string) error { return docker("pause", ct) }, func(ct string) error { return docker("unpause", ct) }},
 		{"pause-scheduler", []string{"scheduler-1", "scheduler-2"}, 18 * time.Second, 25 * time.Second, // past the 15 s leader lease
 			func(ct string) error { return docker("pause", ct) }, func(ct string) error { return docker("unpause", ct) }},
-		{"crash-postgres", []string{"postgres-1"}, 2 * time.Second, 5 * time.Second,
+		// Past Patroni's 20 s leader TTL, so the replica is promoted: an automatic failover.
+		{"crash-primary", []string{"primary"}, 25 * time.Second, 40 * time.Second,
+			func(ct string) error { return docker("kill", "-s", "KILL", ct) }, start},
+		{"crash-replica", []string{"replica"}, 10 * time.Second, 30 * time.Second,
 			func(ct string) error { return docker("kill", "-s", "KILL", ct) }, start},
 		{"cut-network", []string{"worker-1", "worker-2", "dispatch-1", "scheduler-1", "scheduler-2"}, 10 * time.Second, 30 * time.Second,
 			func(ct string) error { return docker("network", "disconnect", network, ct) },
@@ -60,17 +64,27 @@ func (f *faults) run(ctx context.Context, end time.Time) {
 	for time.Now().Before(end) && ctx.Err() == nil {
 		time.Sleep(time.Duration(4+rng.IntN(7)) * time.Second)
 		ft := f.catalog[rng.IntN(len(f.catalog))]
-		ct := f.c.project + "-" + ft.targets[rng.IntN(len(ft.targets))]
+		target := ft.targets[rng.IntN(len(ft.targets))]
+		if target == "primary" || target == "replica" {
+			if target = f.member(target); target == "" {
+				continue // mid-failover: no clear primary/replica right now
+			}
+		}
+		ct := f.c.project + "-" + target
 		hold := ft.min + time.Duration(rng.Int64N(int64(ft.max-ft.min)+1))
+		lock := ct
+		if strings.HasPrefix(ft.name, "crash-") { // crash-primary, crash-replica
+			lock = "database" // one database node down at a time: two at once is outside the fault model
+		}
 		f.mu.Lock()
-		if f.busy[ct] {
+		if f.busy[lock] {
 			f.mu.Unlock()
 			continue
 		}
-		f.busy[ct] = true
+		f.busy[lock] = true
 		f.mu.Unlock()
 		wg.Go(func() {
-			defer func() { f.mu.Lock(); delete(f.busy, ct); f.mu.Unlock() }()
+			defer func() { f.mu.Lock(); delete(f.busy, lock); f.mu.Unlock() }()
 			if err := ft.apply(ct); err != nil {
 				log.Printf("fault %s %s: %v", ft.name, ct, err)
 				return
@@ -101,6 +115,29 @@ func (f *faults) heal() {
 		reconnect(f.c.project+"_default", ct)
 		docker("start", ct)
 	}
+}
+
+// member returns the Patroni node ("pg1"-style service-index name) in role "primary" or
+// "replica", asking whichever node answers.
+func (f *faults) member(role string) string {
+	for _, n := range []string{"pg1", "pg2"} {
+		out, err := exec.Command("docker", "exec", f.c.project+"-"+n+"-1",
+			"patronictl", "-c", "/etc/patroni.yml", "list", "-f", "json").Output()
+		if err != nil {
+			continue
+		}
+		var members []struct{ Member, Role, State string }
+		if json.Unmarshal(out, &members) != nil {
+			continue
+		}
+		for _, m := range members {
+			isPrimary := m.Role == "Leader"
+			if (role == "primary") == isPrimary && (isPrimary || m.State == "streaming") {
+				return m.Member + "-1"
+			}
+		}
+	}
+	return ""
 }
 
 func (f *faults) counts() map[string]int {

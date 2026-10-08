@@ -1,5 +1,5 @@
--- Runs once, on a fresh volume. One role per service, each owning only its own database.
--- Local development passwords only.
+-- Runs once, when the cluster is first bootstrapped. One role per service, each owning only
+-- its own database. Local development passwords only.
 CREATE ROLE jobs_svc LOGIN PASSWORD 'jobs-local-only';
 CREATE ROLE auth_svc LOGIN PASSWORD 'auth-local-only';
 CREATE DATABASE jobs OWNER jobs_svc;

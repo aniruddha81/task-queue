@@ -35,7 +35,11 @@ func main() {
 	}
 	write("ca.crt", ca.CertPEM())
 	for _, svc := range []string{"gateway", "auth", "jobs", "dispatch", "scheduler", "worker", "migrate", "postgres", "sinks", "prometheus"} {
-		crt, key, err := ca.Issue(svc, svc, "localhost")
+		hosts := []string{svc, "localhost"}
+		if svc == "postgres" {
+			hosts = append(hosts, "pg1", "pg2") // the Patroni nodes share one server certificate
+		}
+		crt, key, err := ca.Issue(svc, hosts...)
 		if err != nil {
 			log.Fatal(err)
 		}

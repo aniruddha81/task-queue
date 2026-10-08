@@ -11,40 +11,101 @@ x-service: &service
   volumes: ["./certs:/certs:ro"]
   environment: &env
     TLS_DIR: /certs
-x-jobs-db: &jobs-db postgres://jobs_svc:jobs-local-only@postgres:5432/jobs?sslmode=verify-full&sslrootcert=/certs/ca.crt
+x-jobs-db: &jobs-db postgres://jobs_svc:jobs-local-only@pg1:5432,pg2:5432/jobs?target_session_attrs=read-write&sslmode=verify-full&sslrootcert=/certs/ca.crt
 x-sinks-db: &sinks-db postgres://postgres:sinks-local-only@sinks-postgres:5432/sinks?sslmode=disable
-x-auth-db: &auth-db postgres://auth_svc:auth-local-only@postgres:5432/auth?sslmode=verify-full&sslrootcert=/certs/ca.crt
+x-auth-db: &auth-db postgres://auth_svc:auth-local-only@pg1:5432,pg2:5432/auth?target_session_attrs=read-write&sslmode=verify-full&sslrootcert=/certs/ca.crt
 
 services:
-  postgres:
-    image: postgres:18
+  # PostgreSQL: two nodes managed by Patroni, which elects the primary through a 3-member
+  # etcd cluster and fails over automatically. Clients list both nodes and connect to
+  # whichever accepts writes (target_session_attrs=read-write).
+  etcd1:
+    image: quay.io/coreos/etcd:v3.6.6
     restart: unless-stopped
+    command:
+      - etcd
+      - --name=etcd1
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd1:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd1:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=taskqueue
+    volumes: ["etcd1data:/etcd-data"]
+
+  etcd2:
+    image: quay.io/coreos/etcd:v3.6.6
+    restart: unless-stopped
+    command:
+      - etcd
+      - --name=etcd2
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd2:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd2:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=taskqueue
+    volumes: ["etcd2data:/etcd-data"]
+
+  etcd3:
+    image: quay.io/coreos/etcd:v3.6.6
+    restart: unless-stopped
+    command:
+      - etcd
+      - --name=etcd3
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd3:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd3:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=taskqueue
+    volumes: ["etcd3data:/etcd-data"]
+
+  pg1:
+    build: ./patroni
+    restart: unless-stopped
+    cap_add: [NET_ADMIN] # for tc netem
     environment:
-      POSTGRES_PASSWORD: superuser-local-only # tests connect as postgres with this, over TLS
-    # The server key must be private and owned by postgres; bind mounts on Windows aren't,
-    # so copy the certificate files in before starting.
-    entrypoint:
-      - sh
-      - -c
-      - >-
-        install -o postgres -g postgres -m 600 /certs/postgres.key /tmp/server.key &&
-        install -o postgres -g postgres -m 644 /certs/postgres.crt /tmp/server.crt &&
-        exec docker-entrypoint.sh postgres
-        -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key
-        -c hba_file=/etc/postgresql/pg_hba.conf
-        -c idle_in_transaction_session_timeout=10s
-        -c tcp_keepalives_idle=10 -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3
-    ports: ["5432:5432"]
+      PATRONI_NAME: pg1
+      PATRONI_RESTAPI_CONNECT_ADDRESS: pg1:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg1:5432
+      NETEM_DELAY: 2750us
+    ports: ["5432:5432"] # tests and the chaos checker connect from the host
     volumes:
-      - pgdata:/var/lib/postgresql # PG 18 images keep data under /var/lib/postgresql/18
+      - pg1data:/var/lib/postgresql/data
       - ./certs:/certs:ro
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+    depends_on: [etcd1, etcd2, etcd3]
+    healthcheck: # healthy once Patroni runs PostgreSQL, as primary or replica
+      test: ["CMD-SHELL", "pg_isready -h localhost -U postgres"]
       interval: 2s
       timeout: 2s
-      retries: 30
+      retries: 60
+
+  pg2:
+    build: ./patroni
+    restart: unless-stopped
+    cap_add: [NET_ADMIN] # for tc netem
+    environment:
+      PATRONI_NAME: pg2
+      PATRONI_RESTAPI_CONNECT_ADDRESS: pg2:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg2:5432
+      NETEM_DELAY: 2750us
+    ports: ["5434:5432"] # tests and the chaos checker connect from the host
+    volumes:
+      - pg2data:/var/lib/postgresql/data
+      - ./certs:/certs:ro
+    depends_on: [etcd1, etcd2, etcd3]
+    healthcheck: # healthy once Patroni runs PostgreSQL, as primary or replica
+      test: ["CMD-SHELL", "pg_isready -h localhost -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
 
   migrate-jobs:
     <<: *service
@@ -52,7 +113,7 @@ services:
     build: { context: ../.., target: app, args: { CMD: migrate, TAGS: "${MUTANT:-}" } }
     command: ["jobs"]
     environment: { <<: *env, DATABASE_URL: *jobs-db }
-    depends_on: { postgres: { condition: service_healthy } }
+    depends_on: { pg1: { condition: service_healthy }, pg2: { condition: service_healthy } }
 
   migrate-auth:
     <<: *service
@@ -60,7 +121,7 @@ services:
     build: { context: ../.., target: app, args: { CMD: migrate, TAGS: "${MUTANT:-}" } }
     command: ["auth"]
     environment: { <<: *env, DATABASE_URL: *auth-db }
-    depends_on: { postgres: { condition: service_healthy } }
+    depends_on: { pg1: { condition: service_healthy }, pg2: { condition: service_healthy } }
 
   auth:
     <<: *service
@@ -174,5 +235,9 @@ services:
     depends_on: [prometheus]
 
 volumes:
-  pgdata:
+  pg1data:
+  pg2data:
+  etcd1data:
+  etcd2data:
+  etcd3data:
   sinksdata:

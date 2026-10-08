@@ -2,8 +2,8 @@
 package pgtest
 
 import (
+	"context"
 	"database/sql"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/aniruddha81/task-queue/migrations"
 )
@@ -24,27 +24,25 @@ func New(t *testing.T) string {
 	if server == "" {
 		t.Skip("set TEST_DATABASE_URL to a PostgreSQL 18 server to run")
 	}
-	cfg, err := pgx.ParseConfig(server)
+	ctx := context.Background()
+	admin, err := pgx.Connect(ctx, server) // with several hosts, this lands on the primary
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin := stdlib.OpenDB(*cfg)
 	// Random, not time-based: parallel test packages, and a coarse clock (Windows), collide.
 	name := "test_" + strings.ReplaceAll(uuid.NewV4().String(), "-", "")
-	if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
-		admin.Close()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		admin.Close(ctx)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		admin.Exec("DROP DATABASE " + name + " WITH (FORCE)")
-		admin.Close()
+		admin.Exec(ctx, "DROP DATABASE "+name+" WITH (FORCE)")
+		admin.Close(ctx)
 	})
-	u, err := url.Parse(server)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u.Path = "/" + name
-	return u.String()
+	// Point the test at the node that created the database: a standby may not have
+	// replayed CREATE DATABASE yet, and pgx won't fall back to another host after
+	// "database does not exist".
+	return withHost(withDatabase(server, name), admin.PgConn().Conn().RemoteAddr().String())
 }
 
 // Migrated returns a pool on a fresh database with one database's migrations applied.
@@ -69,4 +67,29 @@ func Migrated(t *testing.T, database string) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// withHost replaces the host list in a postgres:// URL (which must have a /database).
+func withHost(url, hostPort string) string {
+	start := strings.Index(url, "://") + 3
+	end := start + strings.IndexByte(url[start:], '/')
+	if at := strings.LastIndexByte(url[start:end], '@'); at >= 0 {
+		start += at + 1 // keep user:password@
+	}
+	return url[:start] + hostPort + url[end:]
+}
+
+// withDatabase swaps the database name in a postgres:// URL. Not url.Parse: it rejects
+// multi-host URLs such as postgres://u:p@h1:5432,h2:5432/db, which pgx accepts.
+func withDatabase(server, name string) string {
+	query := ""
+	if i := strings.IndexByte(server, '?'); i >= 0 {
+		server, query = server[:i], server[i:]
+	}
+	if i := strings.Index(server, "://"); i >= 0 {
+		if j := strings.IndexByte(server[i+3:], '/'); j >= 0 {
+			server = server[:i+3+j]
+		}
+	}
+	return server + "/" + name + query
 }

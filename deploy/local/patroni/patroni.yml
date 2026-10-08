@@ -1,0 +1,56 @@
+# Each node sets PATRONI_NAME, PATRONI_RESTAPI_CONNECT_ADDRESS and
+# PATRONI_POSTGRESQL_CONNECT_ADDRESS in compose; everything else is shared.
+scope: taskqueue
+namespace: /service/
+
+restapi:
+  listen: 0.0.0.0:8008
+
+etcd3:
+  hosts: etcd1:2379,etcd2:2379,etcd3:2379
+
+bootstrap:
+  dcs:
+    ttl: 20             # a dead primary's leader key expires after this
+    loop_wait: 5
+    retry_timeout: 5
+    maximum_lag_on_failover: 1048576
+    # Synchronous replication while the replica is healthy; if it isn't, Patroni drops to
+    # asynchronous so writes continue (not strict), and only ever promotes an in-sync replica.
+    synchronous_mode: true
+    synchronous_mode_strict: false
+    postgresql:
+      use_pg_rewind: true # a failed old primary rejoins as a replica without a full copy
+      parameters:
+        idle_in_transaction_session_timeout: 10s
+        tcp_keepalives_idle: 10
+        tcp_keepalives_interval: 5
+        tcp_keepalives_count: 3
+        max_connections: 200
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+  post_bootstrap: /usr/local/bin/init-dbs.sh
+
+postgresql:
+  listen: 0.0.0.0:5432
+  data_dir: /var/lib/postgresql/data/patroni
+  pgpass: /tmp/pgpass
+  basebackup:
+    - checkpoint: fast # a new replica starts copying at once, not after a spread checkpoint
+  authentication:
+    superuser:
+      username: postgres
+      password: superuser-local-only
+    replication:
+      username: replicator
+      password: replication-local-only
+  parameters:
+    ssl: "on"
+    ssl_cert_file: /var/lib/postgresql/server.crt
+    ssl_key_file: /var/lib/postgresql/server.key
+  # Inside the container: trusted. Everything over the network, replication included: TLS only.
+  pg_hba:
+    - local all all trust
+    - hostssl replication replicator all scram-sha-256
+    - hostssl all all all scram-sha-256

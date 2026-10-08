@@ -4,7 +4,7 @@ A distributed job scheduler in Go, running across AWS and Azure. It never loses 
 
 It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
 
-> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live. Automatic database failover comes next.
+> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live, and PostgreSQL fails over automatically (Patroni) with zero acknowledged jobs lost. The cloud phases come next.
 
 ## Use cases
 
@@ -38,7 +38,7 @@ go run ./cmd/devcerts                                   # dev CA, service certif
 docker compose -f deploy/local/compose.yml up --build
 ```
 
-This starts PostgreSQL 18 (TLS only, one role per service), `auth`, `jobs`, `dispatch`, two `scheduler`s (one elected leader runs the lease reaper and cron), a `worker`, and the `gateway`. The gateway at **https://localhost:8443** is the only public port; every internal call uses mTLS.
+This starts PostgreSQL 18 as two Patroni nodes with synchronous replication and automatic failover (TLS only, one role per service, 5.5 ms of simulated cross-cloud latency between the nodes), `auth`, `jobs`, `dispatch`, two `scheduler`s (one elected leader runs the lease reaper and cron), a `worker`, and the `gateway`. The gateway at **https://localhost:8443** is the only public port; every internal call uses mTLS.
 
 ### Dashboard and metrics
 
@@ -103,7 +103,7 @@ go test ./...
 The database tests are skipped unless `TEST_DATABASE_URL` points at a PostgreSQL 18 server. They create and drop their own throwaway databases, so the local stack's server is safe to use:
 
 ```sh
-TEST_DATABASE_URL="postgres://postgres:superuser-local-only@localhost:5432/postgres?sslmode=require" go test -race ./...
+TEST_DATABASE_URL="postgres://postgres:superuser-local-only@localhost:5432,localhost:5434/postgres?sslmode=require&target_session_attrs=read-write" go test -race ./...
 ```
 
 After editing anything in `proto/`, regenerate the Go code. This also lints the proto files:
@@ -122,6 +122,8 @@ bash deploy/local/mutants.sh                  # each mutant build must FAIL the 
 ```
 
 `torture` submits a mix of jobs through the gateway while killing, pausing and cutting off services and crashing Postgres. It then checks every guarantee against its own fsynced log of acknowledgements, the jobs database, and the sinks (stand-ins for external systems, plus Mailpit for email). A guarantee whose fault never fired fails too: nothing was proven. Reports land in [docs/results/](docs/results/); rerun with `-seed` to repeat a fault timetable.
+
+`go run ./cmd/bench` measures throughput and latency against worker count, with synchronous replication on and off ([results](docs/results/load-local.md)).
 
 `mutants.sh` builds five deliberately broken variants (lease fencing, idempotency keys, effect keys, the leader's epoch fence, and acknowledging before commit each removed in turn) and requires the checker to catch every one.
 
@@ -152,6 +154,7 @@ cmd/worker/       runs job handlers (demo: chaos.sleep)
 cmd/scheduler/    leader-elected chores: lease reaper and cron ticks
 cmd/sinks/        test destinations that deduplicate on the effect key
 cmd/torture/      the chaos test and its checker
+cmd/bench/        load baseline: throughput and latency vs workers
 internal/scheduler/ leader election (lease + epoch) and fenced chores
 cmd/devcerts/     writes the local dev CA, certificates and JWT key
 internal/queue/   jobs database: submit, get, list, cancel
@@ -170,7 +173,7 @@ cmd/migrate/      one-shot migration runner: migrate <database>
 migrations/       SQL migrations, one folder per database
 proto/            worker API (Protobuf)
 gen/              Go code generated from proto/ (do not edit)
-deploy/local/     Docker Compose for local development
+deploy/local/     Docker Compose for local development (Patroni + etcd, monitoring)
 web/              Next.js dashboard (static export, served by the gateway)
 docs/results/     measurements and checks (e.g. cloud accounts)
 ```

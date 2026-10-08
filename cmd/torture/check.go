@@ -117,7 +117,7 @@ func check(ctx context.Context, c config, l *load, runID string, start time.Time
 
 	// G1: every acknowledged job exists. Source 1 (the ack log) against source 2.
 	g1 := row{name: "G1", claim: "An acknowledged job is never lost",
-		exercised: "kills of jobs/gateway/auth and Postgres crashes", evidence: faults["kill"] + faults["crash-postgres"]}
+		exercised: "service kills and database primary crashes (failovers)", evidence: faults["kill"] + faults["crash-primary"]}
 	for _, a := range l.log {
 		if _, ok := jobs[a.id]; !ok {
 			g1.violations = append(g1.violations, fmt.Sprintf("acknowledged %s (key %s) is not in the database", a.id, a.key))
