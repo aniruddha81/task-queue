@@ -103,16 +103,22 @@ revert() { # VM-side faults revert themselves; stopped VMs are started here
 
 # ---------- the probe: what an outside client sees, every 2 s ----------
 probe() {
-  local pw token t v l s n=0
+  set +eu # it must outlive any failed request
+  local pw token= t v l s n=0 c=(curl -s --max-time 5)
+  curl -V | grep -q Schannel && c+=(--ssl-no-revoke) # Windows' TLS can't reach revocation lists here
   pw=$(aws ssm get-parameter --region "$region" --name /tq/ci/smoke-password --with-decryption --query Parameter.Value --output text)
-  login() { curl -s -o /tmp/tq-probe-login -w '%{http_code}' --max-time 5 "https://$fqdn/v1/auth/login" -d "{\"email\":\"smoke@example.com\",\"password\":\"$pw\"}"; }
-  login >/dev/null && token=$(jq -r .token </tmp/tq-probe-login)
+  # The body, then the status on its own line (no temp file: on Windows, curl and bash disagree on /tmp).
+  login() { "${c[@]}" -w '\n%{http_code}' "https://$fqdn/v1/auth/login" -d "{\"email\":\"smoke@example.com\",\"password\":\"$pw\"}"; }
   while :; do
     t=$(date -u +%s)
-    v=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "https://$fqdn/version")
+    v=$("${c[@]}" -o /dev/null -w '%{http_code}' "https://$fqdn/version")
     l=-
-    if [ $((n % 5)) = 0 ]; then l=$(login); fi # the login limiter allows one every 2 s
-    s=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "https://$fqdn/v1/jobs" -H "Authorization: Bearer $token" \
+    if [ $((n % 5)) = 0 ] || [ -z "$token" ]; then # the login limiter allows one every 2 s
+      l=$(login)
+      [ "$(tail -1 <<<"$l")" = 200 ] && token=$(head -1 <<<"$l" | jq -r .token)
+      l=$(tail -1 <<<"$l")
+    fi
+    s=$("${c[@]}" -o /dev/null -w '%{http_code}' "https://$fqdn/v1/jobs" -H "Authorization: Bearer $token" \
       -H "Idempotency-Key: probe-$scenario-$t-$n" -d '{"queue":"default","type":"chaos.sleep","payload":{"ms":10}}')
     echo "$t $v $l $s" >>"$probe_log"
     n=$((n + 1))
@@ -156,7 +162,7 @@ done
 kill $probe_pid 2>/dev/null || true
 code=$(run "$ops" "docker inspect -f '{{.State.ExitCode}}' torture" | head -1 | tr -d '[:space:]')
 report=$(run "$ops" "ls -t /opt/tq-harness/results/*-$scenario.md | head -1" | head -1 | tr -d '[:space:]')
-run "$ops" "cat $report" | sed '/^\s*$/N;/^\s*\n$/D' >"$results/$(basename "$report")"
+run "$ops" "base64 -w0 $report" | tr -d '[:space:]' | base64 -d >"$results/$(basename "$report")" # bytes intact
 log "checker exit $code; report $results/$(basename "$report")"
 
 # The probe's timeline: share of 2xx answers before, during and after the fault window.
