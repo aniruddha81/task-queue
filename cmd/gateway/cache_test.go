@@ -34,6 +34,7 @@ func TestSharedCache(t *testing.T) {
 				w.Write(b)
 				return
 			}
+			w.Header().Set("X-Acme-Cache", "miss")
 			http.NotFound(w, r)
 		case "PUT":
 			store[key], _ = io.ReadAll(r.Body)
@@ -43,8 +44,13 @@ func TestSharedCache(t *testing.T) {
 	}))
 	defer auth.Close()
 	u, _ := url.Parse(auth.URL)
+	// An auth from before the cache existed: every /internal path is an unmarked 404. It's
+	// first in the list, as the nearest auth is mid-deploy.
+	oldAuth := httptest.NewServer(http.NotFoundHandler())
+	defer oldAuth.Close()
+	old, _ := url.Parse(oldAuth.URL)
 	newCache := func() sharedCache {
-		return sharedCache{local: autocert.DirCache(t.TempDir()), auth: []*url.URL{u}, client: auth.Client()}
+		return sharedCache{local: autocert.DirCache(t.TempDir()), auth: []*url.URL{old, u}, client: auth.Client()}
 	}
 
 	a, b := newCache(), newCache()
@@ -68,9 +74,9 @@ func TestSharedCache(t *testing.T) {
 	mu.Lock()
 	up = true
 	mu.Unlock()
-	old := newCache()
-	old.local.Put(ctx, "legacy", []byte("on-disk"))
-	if got, err := old.Get(ctx, "legacy"); err != nil || string(got) != "on-disk" {
+	alone := newCache()
+	alone.local.Put(ctx, "legacy", []byte("on-disk"))
+	if got, err := alone.Get(ctx, "legacy"); err != nil || string(got) != "on-disk" {
 		t.Fatalf("legacy: got %q, %v", got, err)
 	}
 	if got, err := newCache().Get(ctx, "legacy"); err != nil || string(got) != "on-disk" {

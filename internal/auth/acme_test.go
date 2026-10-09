@@ -35,6 +35,7 @@ func TestACMECacheGatewayOnly(t *testing.T) {
 	srv.StartTLS()
 	defer srv.Close()
 
+	var missHeader string
 	do := func(as, method, body string) (int, string) {
 		c := &http.Client{Transport: &http.Transport{TLSClientConfig: bundle(as).Client()}}
 		req, _ := http.NewRequest(method, srv.URL+"/internal/acme/tq.example+rsa", bytes.NewBufferString(body))
@@ -44,10 +45,11 @@ func TestACMECacheGatewayOnly(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(resp.Body)
+		missHeader = resp.Header.Get("X-Acme-Cache")
 		return resp.StatusCode, string(b)
 	}
-	if code, _ := do("gateway", "GET", ""); code != http.StatusNotFound {
-		t.Fatalf("empty cache: got %d, want 404", code)
+	if code, _ := do("gateway", "GET", ""); code != http.StatusNotFound || missHeader != "miss" {
+		t.Fatalf("empty cache: got %d (X-Acme-Cache %q), want 404 marked as a miss", code, missHeader)
 	}
 	if code, _ := do("gateway", "PUT", "cert-v1"); code != http.StatusOK {
 		t.Fatalf("put: %d", code)

@@ -11,7 +11,7 @@ import (
 // The gateways' shared ACME cache (autocert.Cache over HTTP), for the gateway's mTLS
 // certificate only:
 //
-//	GET    /internal/acme/{key}   200 with the bytes, or 404
+//	GET    /internal/acme/{key}   200 with the bytes, or 404 with X-Acme-Cache: miss
 //	PUT    /internal/acme/{key}   stores the body
 //	DELETE /internal/acme/{key}
 func (s *Service) acme(w http.ResponseWriter, r *http.Request) {
@@ -26,6 +26,8 @@ func (s *Service) acme(w http.ResponseWriter, r *http.Request) {
 		var data []byte
 		err = s.db.QueryRow(r.Context(), `SELECT data FROM acme_cache WHERE key = $1`, key).Scan(&data)
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Marked, so a caller can't mistake an auth without this route (mid-deploy) for a miss.
+			w.Header().Set("X-Acme-Cache", "miss")
 			http.Error(w, "miss", http.StatusNotFound)
 			return
 		}

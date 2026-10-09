@@ -36,11 +36,12 @@ variable "vms" {
   # and jobs on svc-a only and auth on svc-z only; see docs/results/act1-fragility.md.
   # One database still (pg-a) until week 13.
   default = {
-    "svc-a"  = { cloud = "aws", mesh = 11, roles = ["gateway", "auth", "jobs", "dispatch", "scheduler"] }
+    # Roles converge in this order: the gateway last, so its upstreams on the VM are already new.
+    "svc-a"  = { cloud = "aws", mesh = 11, roles = ["auth", "jobs", "dispatch", "scheduler", "gateway"] }
     "work-a" = { cloud = "aws", mesh = 12, roles = ["worker"] }
     "pg-a"   = { cloud = "aws", mesh = 13, roles = ["etcd", "postgres"] }
     "ops-a"  = { cloud = "aws", mesh = 14, roles = ["ops"] }
-    "svc-z"  = { cloud = "azure", mesh = 21, roles = ["gateway", "auth", "jobs", "dispatch", "scheduler"] }
+    "svc-z"  = { cloud = "azure", mesh = 21, roles = ["auth", "jobs", "dispatch", "scheduler", "gateway"] }
     "work-z" = { cloud = "azure", mesh = 22, roles = ["worker"] }
     # Act 2 (week 13) adds:
     # "pg-z" = { cloud = "azure", mesh = 23, roles = ["etcd", "postgres"] }

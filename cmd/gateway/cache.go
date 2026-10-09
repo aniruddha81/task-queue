@@ -49,7 +49,8 @@ func (c sharedCache) Delete(ctx context.Context, key string) error {
 	return c.local.Delete(ctx, key)
 }
 
-// remote tries each auth in turn. A 404 is an answer (ErrCacheMiss), not a failure.
+// remote tries each auth in turn. A marked 404 is an answer (ErrCacheMiss); anything else,
+// including an unmarked 404 from an auth that predates the cache, tries the next auth.
 func (c sharedCache) remote(ctx context.Context, method, key string, body []byte) ([]byte, error) {
 	err := errors.New("no auth upstream")
 	for _, u := range c.auth {
@@ -65,7 +66,7 @@ func (c sharedCache) remote(ctx context.Context, method, key string, body []byte
 		data, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		switch {
-		case resp.StatusCode == http.StatusNotFound:
+		case resp.StatusCode == http.StatusNotFound && resp.Header.Get("X-Acme-Cache") == "miss":
 			return nil, autocert.ErrCacheMiss
 		case resp.StatusCode == http.StatusOK:
 			return data, nil

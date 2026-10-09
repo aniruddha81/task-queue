@@ -2,6 +2,16 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-09 · The second gateway issued its own certificate instead of sharing the first's
+
+**Found by:** the first rollout to two gateways (week 12). After it, the two gateways served different Let's Encrypt certificates: `svc-a` its one from Oct 8, `svc-z` a new one. That spent the fourth of Let's Encrypt's five duplicate certificates a week for the name.
+
+**Cause:** two things together. `svc-a`'s gateway restarted on the new code before its `auth` did, because roles converged in the role map's order with the gateway first. Its first cache lookup then asked the old `auth`, which had no `/internal/acme` route and answered 404. The gateway took any 404 as "the shared cache has no such key" and stopped, so the certificate on its disk was never shared, and `svc-z` found nothing and issued a new one. The validation itself worked across gateways: `svc-a` answered Let's Encrypt's challenge for `svc-z`'s order from the shared cache.
+
+**Fix:** `auth` marks a real miss (`X-Acme-Cache: miss`), and the gateway treats only a marked 404 as a miss and otherwise tries the next `auth`. The test now puts an old `auth` first in the list and fails without the fix. Roles also converge with the gateway last, so a gateway's upstreams on its VM are already new.
+
+**Lesson:** during a rolling deploy, a new client always meets an old server. "Not found" from a server that doesn't know the route is not an answer.
+
 ## 2026-10-08 · The experiment probe died silently and reported an empty table (tooling bug)
 
 **Found by:** the first `kill-gateway` experiment (week 11). The checker passed, but the probe's table read 0/0 in every window.
