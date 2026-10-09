@@ -6,7 +6,7 @@ Oct 9, 2026. Every stateless service now runs in both clouds: `svc-a` (AWS Mumba
 
 | Check | Result |
 | --- | --- |
-| Five rollouts in a row with zero failed probe requests | ✅ seven in a row: 25,713 requests, 0 failed (below) |
+| Five rollouts in a row with zero failed probe requests | ✅ eight in a row: 29,150 requests, 0 failed (below) |
 | Stopping any one stateless VM fails no request beyond its in-flight ones | ✅ `svc-a` and `svc-z`: only requests in flight on the VM at the moment it stopped failed (below) |
 
 ## How a release reaches both clouds with nothing dropped
@@ -36,8 +36,9 @@ Behind the gateways, a request that can't reach its nearest `jobs` or `auth` is 
 | 5 | `b2e2fb9` | deployment plan | 3,673 requests, **0 failed** |
 | 6 | `d78db54` | gateway ready only with its upstreams | 3,622 requests, **0 failed** |
 | 7 | `7dc66ab` | experiment workflow; CI actions on Node 24 | 3,385 requests, **0 failed** |
+| 8 | `c218596` | deadlines on leadership steps (after the chaos run caught the stall) | 3,437 requests, **0 failed** |
 
-Each rollout restarts every service in both clouds, and each passed the full CI and a 5-minute chaos run first (every checker verdict: PASS). The next release, `3fcba90`, was stopped by its chaos run; see below.
+Each rollout restarts every service in both clouds, and each passed the full CI and a 5-minute chaos run first (every checker verdict: PASS). Between rollouts 7 and 8, release `3fcba90` was stopped by its chaos run and `4c155e3` by the new test's first CI run (see below); neither reached the VMs, so the run of zero-failure rollouts is unbroken.
 
 ## Stopping a stateless VM
 
