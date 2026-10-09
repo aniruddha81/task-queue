@@ -222,5 +222,6 @@ docs/results/     measurements and checks (e.g. cloud accounts)
 
 ## Docs
 
+- [docs/journey.md](docs/journey.md): how it was built so far, week by week, and what each step taught
 - [full_plan(v4).md](full_plan(v4).md): the design, the guarantees, and the week-by-week plan
 - [deployment_plan.md](deployment_plan.md): CI/CD and zero-downtime deploys
