@@ -141,6 +141,8 @@ jobs:
 
 While the rollout runs, a separate job on a GitHub-hosted runner, outside both clouds, sends about 10 requests per second through the Traffic Manager name, resolving DNS afresh for every request. It mixes reads with idempotent submits and **does not retry**. A single failed request fails the release and triggers rollback. This is the evidence for "zero downtime", collected on every deploy.
 
+*As built (week 12):* the probe (`deploy/release/probe`) runs as a background process of `rollout.sh` on the deploy job's runner, not as a separate job. It is still outside both clouds, and it starts before the first VM changes and stops after the smoke test, so the deploy can't run without it. Its summary (`probe: N requests, 0 failed`) and each failed request become workflow annotations. Where a gateway has no twin online, it has to be deployed in place; the probe's failures then become a warning, because zero downtime is impossible there.
+
 ### VMs bring themselves up to date
 
 `tq-converge.service` runs `deploy.sh` with `current` at every boot. The release record is kept in both SSM and Key Vault. A new, replaced or rebooted VM therefore always comes up on the right release without anyone touching it.
