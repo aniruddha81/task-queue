@@ -33,6 +33,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: stop ${{ inputs.vm }} under the probe
         run: |
+          set -o pipefail # without it, `x | tee log` succeeds whatever x does
           bash deploy/experiments/stop-vm.sh "${{ inputs.vm }}" 2>&1 | tee experiment.log || {
             sed -n 's/^probe: FAILED/::error::&/p' experiment.log
             echo "::error::$(grep -E '^probe: [0-9]+ requests' experiment.log)"

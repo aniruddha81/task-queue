@@ -32,6 +32,7 @@ jobs:
         env:
           FOR: ${{ inputs.for || '2m' }}
         run: |
+          set -o pipefail # without it, `x | tee log` succeeds whatever x does
           export PROBE_PASSWORD=$(aws ssm get-parameter --name /tq/ci/smoke-password --with-decryption --query Parameter.Value --output text)
           go run ./deploy/release/probe -url https://tq-aniruddha81.trafficmanager.net -for "$FOR" | tee probe.log || {
             sed -n 's/^probe: FAILED/::error::&/p' probe.log

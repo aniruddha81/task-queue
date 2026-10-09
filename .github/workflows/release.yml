@@ -39,6 +39,7 @@ jobs:
         run: timeout 300 bash -c 'until curl -fsS --cacert deploy/local/certs/ca.crt https://localhost:8443/readyz; do sleep 3; done'
       - name: chaos run
         run: |
+          set -o pipefail # without it, `x | tee log` succeeds whatever x does
           go run ./cmd/torture -duration 5m -quiesce 5m -out chaos-report 2>&1 | tee torture.log || {
             # Annotations are readable without signing in, unlike job logs.
             grep -E 'FAIL|fatal|rror|create schedule|login' torture.log | tail -20 | sed 's/^/::error::/'

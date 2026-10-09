@@ -2,6 +2,18 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-09 · A failing chaos run would have passed CI (workflow bug)
+
+**Found by:** the first stop-VM experiment on a GitHub runner (week 12). The probe reported `1 failed`, but the workflow run was green.
+
+**Cause:** the steps that save their output with `x | tee file || { report; exit 1; }` ran under GitHub's default `run:` shell, which is `bash -e` without `pipefail`. A pipeline's status is then `tee`'s, which always succeeds, so the failure branch never ran. The same pattern was in the release workflow's chaos step from `34a614a` on, so a chaos run whose checker failed would have let the release through; and in `probe.yml`, so a failing uptime probe would not have alerted.
+
+**Did it hide anything?** No. Each release's chaos job log ends with the checker's own verdict, and every release from `f72a5ad` to `7dc66ab` reads `Chaos run …: PASS`.
+
+**Fix:** `set -o pipefail` in each of those steps.
+
+**Lesson:** a gate is only as strong as the exit status it reads. Each check that can fail should be made to fail once on purpose, as the mutant builds do for the checker.
+
 ## 2026-10-09 · The second gateway issued its own certificate instead of sharing the first's
 
 **Found by:** the first rollout to two gateways (week 12). After it, the two gateways served different Let's Encrypt certificates: `svc-a` its one from Oct 8, `svc-z` a new one. That spent the fourth of Let's Encrypt's five duplicate certificates a week for the name.
