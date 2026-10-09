@@ -75,6 +75,10 @@ func TestLeadsAgainAfterSilentlyDeadConnections(t *testing.T) {
 		holes = append(holes, b)
 		*host, *port = "127.0.0.1", uint16(b.l.Addr().(*net.TCPAddr).Port)
 	}
+	// As every deployed Postgres is configured (patroni.yml): a session whose client vanished
+	// mid-transaction is ended after 10 s, releasing its locks (here, the FOR SHARE on the
+	// lease row). CI's plain postgres:18 has it off, so the test sets it per session.
+	cfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "10s"
 	proxy(&cfg.ConnConfig.Host, &cfg.ConnConfig.Port)
 	for _, f := range cfg.ConnConfig.Fallbacks { // every node of a cluster, to find the primary
 		proxy(&f.Host, &f.Port)
