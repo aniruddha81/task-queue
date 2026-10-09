@@ -4,7 +4,7 @@ A distributed job scheduler in Go, running across AWS and Azure. It never loses 
 
 It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
 
-> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live, and PostgreSQL fails over automatically (Patroni) with zero acknowledged jobs lost. It runs across AWS Mumbai and Azure Central India (Act 1: one gateway, one database), deployed by a pipeline with rolling deploys, a smoke test and automatic rollback. The [Act 1 experiments](docs/results/act1-fragility.md) show safety holding through every single failure, and availability needing both clouds and the link between them; Act 2 removes those single points of failure next.
+> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live, and PostgreSQL fails over automatically (Patroni) with zero acknowledged jobs lost. It runs across AWS Mumbai and Azure Central India. The [Act 1 experiments](docs/results/act1-fragility.md) showed safety holding through every single failure, and availability needing both clouds and the link between them. Since week 12 every stateless service runs in both clouds behind Traffic Manager, and each release is deployed one VM at a time, with each gateway drained first, while an external probe that never retries checks for failed requests. The database moves to both clouds next (week 13).
 
 ## Use cases
 
@@ -153,7 +153,7 @@ git release
 
 ## Run it in the cloud
 
-AWS Mumbai and Azure Central India, joined by a WireGuard mesh. The public address is `https://tq-aniruddha81.trafficmanager.net`, with a Let's Encrypt certificate that the gateway obtains itself. You need Terraform 1.11 or later, plus the `aws`, `az` and `gh` CLIs, all signed in, along with `jq`, `curl` and `make` (Linux, macOS or WSL).
+AWS Mumbai and Azure Central India, joined by a WireGuard mesh. The public address is `https://tq-aniruddha81.trafficmanager.net`: Traffic Manager returns both gateways' addresses, and each gateway falls back to its twin's `auth` and `jobs` in the other cloud when its own can't be reached. The two gateways share one Let's Encrypt certificate, which they obtain themselves and keep in `auth`'s database. You need Terraform 1.11 or later, plus the `aws`, `az` and `gh` CLIs, all signed in, along with `jq`, `curl` and `make` (Linux, macOS or WSL).
 
 ```sh
 make bootstrap   # once: state bucket, persistent stack (Traffic Manager, Key Vault, CI's OIDC roles, budget)
@@ -175,6 +175,7 @@ Experiments against the running cloud (pre-production; each applies one fault wh
 
 ```sh
 bash deploy/experiments/act1.sh kill-gateway   # or cut-clouds, stop-azure, stop-aws
+bash deploy/experiments/stop-vm.sh svc-a        # stop one VM under the external probe
 bash deploy/experiments/hops.sh                # per-hop latency
 ```
 
