@@ -105,7 +105,7 @@ probe_pid=$!
 probe_stop() {
   local rc=0
   kill -TERM "$probe_pid" && wait "$probe_pid" || rc=$?
-  sed 's/^probe: FAILED/::error::probe: FAILED/' "$probe_dir/log"
+  sed 's/^probe: FAILED/::error::&/; s/^probe: [0-9]* requests/::notice::&/' "$probe_dir/log"
   return $rc
 }
 
