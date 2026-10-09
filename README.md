@@ -4,7 +4,7 @@ A distributed job scheduler in Go, running across AWS and Azure. It never loses 
 
 It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
 
-> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live, and PostgreSQL fails over automatically (Patroni) with zero acknowledged jobs lost. The cloud infrastructure (Terraform for AWS and Azure, a WireGuard mesh) and the release pipeline (rolling deploys with smoke test and rollback) are written but not yet applied to the cloud.
+> **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live, and PostgreSQL fails over automatically (Patroni) with zero acknowledged jobs lost. It runs across AWS Mumbai and Azure Central India (Act 1: one gateway, one database), deployed by a pipeline with rolling deploys, a smoke test and automatic rollback. The [Act 1 experiments](docs/results/act1-fragility.md) show safety holding through every single failure, and availability needing both clouds and the link between them; Act 2 removes those single points of failure next.
 
 ## Use cases
 
@@ -171,6 +171,13 @@ Admin access goes over the mesh only; no SSH port is open. Put `admin_wg_public_
 
 The seeded logins: `terraform -chdir=deploy/terraform/session output users`.
 
+Experiments against the running cloud (pre-production; each applies one fault while the chaos harness runs on `ops-a`, then saves the checker's report and an outside probe's timeline in `docs/results/`):
+
+```sh
+bash deploy/experiments/act1.sh kill-gateway   # or cut-clouds, stop-azure, stop-aws
+bash deploy/experiments/hops.sh                # per-hop latency
+```
+
 `terraform -chdir=deploy/terraform/session test` checks the role map's wiring against mocked clouds: who calls whom, the rollout order, and which VM receives which secret.
 
 ## Layout
@@ -206,7 +213,8 @@ gen/              Go code generated from proto/ (do not edit)
 deploy/local/     Docker Compose for local development (Patroni + etcd, monitoring)
 deploy/terraform/ persistent/ and session/ stacks; vms.sh (nightly stop/start, sweep)
 deploy/vm/        per-VM deploy.sh and one Compose file per role
-deploy/release/   rollout.sh: rolling deploy, smoke test, rollback
+deploy/release/   rollout.sh: rolling deploy, smoke test, rollback; vmrun.sh: Run Command helpers
+deploy/experiments/ act1.sh (cloud fault scenarios with the harness), hops.sh (latency)
 web/              Next.js dashboard (static export, served by the gateway)
 docs/results/     measurements and checks (e.g. cloud accounts)
 ```

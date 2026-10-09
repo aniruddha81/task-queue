@@ -2,6 +2,16 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-08 · The experiment probe died silently and reported an empty table (tooling bug)
+
+**Found by:** the first `kill-gateway` experiment (week 11). The checker passed, but the probe's table read 0/0 in every window.
+
+**Cause:** the probe ran under the runner's `set -u`. On Windows, curl's TLS (Schannel) couldn't check certificate revocation, so the first login failed, the token stayed unset, and the next line's `$token` killed the probe on its first iteration with nothing logged. A table of zeros could be read as "nothing failed".
+
+**Fix:** the probe turns `set -eu` off for itself, adds `--ssl-no-revoke` when curl uses Schannel, logs in again whenever it has no token, and reads curl's body and status from one call (with path conversion off, Windows curl and bash also disagreed on where `/tmp` is). The run was repeated; its numbers are in [act1-fragility.md](results/act1-fragility.md).
+
+**Lesson:** an observer that can fail must fail loudly. Zero observations is a result to question, not a quiet window.
+
 ## 2026-10-08 · The sweep reported "nothing left" when it couldn't look (tooling bug)
 
 **Found by:** the first `make down` in the cloud (week 10). The sweep printed an Azure CLI usage error, `the following arguments are required: --resource-group`, and then `sweep: nothing left`.

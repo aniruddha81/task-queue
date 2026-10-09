@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # hops.sh: per-hop latency of the Act 1 layout (week 11), measured from the VMs themselves.
-# Each hop is 20 requests on one kept-alive connection; the median leaves out the first
-# request's handshake. SQL hops time `SELECT 1` in one psql session. Prints a Markdown table.
+# Each hop is 20 GET /healthz (no dependency checks) on one kept-alive connection; the median
+# leaves out the first request's handshake. SQL hops time `SELECT 1` in one psql session.
+# Prints a Markdown table.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . deploy/release/vmrun.sh
@@ -9,8 +10,8 @@ cd "$(dirname "$0")/../.."
 # https <from-vm> <url>: median ms of 20 GETs over one mTLS connection.
 https() {
   run "$1" "cert=\$(ls /etc/tq/certs/*.crt | grep -v /ca.crt | head -1)
-    urls=''; for i in \$(seq 20); do urls=\"\$urls $2\"; done
-    curl -s -o /dev/null --cacert /etc/tq/certs/ca.crt --cert \$cert --key \${cert%.crt}.key -w '%{time_total}\n' \$urls |
+    urls=''; for i in \$(seq 20); do urls=\"\$urls -o /dev/null $2\"; done # -o binds to one URL each
+    curl -s --cacert /etc/tq/certs/ca.crt --cert \$cert --key \${cert%.crt}.key -w '%{time_total}\n' \$urls |
       tail -19 | sort -n | awk '{a[NR]=\$1} END {printf \"%.2f\n\", a[int((NR+1)/2)]*1000}'" | head -1
 }
 
@@ -24,17 +25,17 @@ sql() {
 
 # public: from ops-a, the public name's full request, as an in-region client sees it.
 public() {
-  run "$ops" "urls=''; for i in \$(seq 20); do urls=\"\$urls https://$fqdn/version\"; done
-    curl -s -o /dev/null -w '%{time_total}\n' \$urls | tail -19 | sort -n | awk '{a[NR]=\$1} END {printf \"%.2f\n\", a[int((NR+1)/2)]*1000}'" | head -1
+  run "$ops" "urls=''; for i in \$(seq 20); do urls=\"\$urls -o /dev/null https://$fqdn/version\"; done
+    curl -s -w '%{time_total}\n' \$urls | tail -19 | sort -n | awk '{a[NR]=\$1} END {printf \"%.2f\n\", a[int((NR+1)/2)]*1000}'" | head -1
 }
 
 echo "| Hop | Clouds | Median ms |"
 echo "| --- | --- | --- |"
 echo "| client (ops-a) → gateway, through Traffic Manager's name | AWS → AWS | $(public) |"
-echo "| gateway → jobs (svc-a) | AWS, same VM | $(https svc-a https://svc-a:8080/readyz) |"
-echo "| gateway → auth (svc-z) | AWS → Azure | $(https svc-a https://svc-z:8083/readyz) |"
+echo "| gateway → jobs (svc-a) | AWS, same VM | $(https svc-a https://svc-a:8080/healthz) |"
+echo "| gateway → auth (svc-z) | AWS → Azure | $(https svc-a https://svc-z:8083/healthz) |"
 echo "| jobs, dispatch-a → Postgres primary (pg-a) | AWS → AWS | $(sql svc-a) |"
 echo "| dispatch-z → Postgres primary (pg-a) | Azure → AWS | $(sql svc-z) |"
-echo "| worker (work-a) → dispatch-a | AWS → AWS | $(https work-a https://svc-a:8081/readyz) |"
-echo "| worker (work-z) → dispatch-z | Azure → Azure | $(https work-z https://svc-z:8081/readyz) |"
-echo "| worker (work-z) → sinks (ops-a) | Azure → AWS | $(https work-z https://ops-a:8090/readyz) |"
+echo "| worker (work-a) → dispatch-a | AWS → AWS | $(https work-a https://svc-a:8081/healthz) |"
+echo "| worker (work-z) → dispatch-z | Azure → Azure | $(https work-z https://svc-z:8081/healthz) |"
+echo "| worker (work-z) → sinks (ops-a) | Azure → AWS | $(https work-z https://ops-a:8090/healthz) |"
