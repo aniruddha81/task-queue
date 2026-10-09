@@ -27,19 +27,27 @@ A learning log for the project so far: what each week built, the idea behind it,
 
 ### The services
 
-```text
-browser / curl / probe
-        │  HTTPS (public)
-        ▼
-   Traffic Manager DNS ──► gateway (in each cloud): TLS, JWT check, rate limit, dashboard
-                              │ mTLS                     │ mTLS
-                              ▼                          ▼
-                            auth                        jobs  ──► PostgreSQL (jobs, auth)
-                     (login, JWKS)               (submit/get/list/cancel)      ▲
-                                                                               │
-   worker ──mTLS──► dispatch (claim, heartbeat, complete, fail) ───────────────┤
-                                                                               │
-                    scheduler ×2 (one leader: lease reaper + cron) ────────────┘
+```mermaid
+flowchart LR
+    client["Browser, curl, probe"]
+    tm["Traffic Manager DNS"]
+    gateway["gateway, in each cloud<br/>TLS, JWT check, rate limit, dashboard"]
+    auth["auth<br/>login, JWKS"]
+    jobs["jobs<br/>submit, get, list, cancel"]
+    worker["worker"]
+    dispatch["dispatch<br/>claim, heartbeat, complete, fail"]
+    scheduler["scheduler x2<br/>one leader: lease reaper, cron"]
+    pg[("PostgreSQL<br/>databases jobs and auth")]
+
+    client -->|"HTTPS, public"| tm
+    tm --> gateway
+    gateway -->|mTLS| auth
+    gateway -->|mTLS| jobs
+    worker -->|mTLS| dispatch
+    auth --> pg
+    jobs --> pg
+    dispatch --> pg
+    scheduler --> pg
 ```
 
 Every internal call is mutual TLS (mTLS): each service has a certificate from the project's own certificate authority, and refuses callers without one.
