@@ -2,6 +2,18 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-09 · After a network cut, no scheduler led for 7 minutes, so expired leases piled up
+
+**Found by:** the chaos run in release `3fcba90`'s CI, the first that the `pipefail` fix let fail. G5 failed: 66 jobs were still `running` when the 5-minute quiesce ran out, long after their 30 s leases expired.
+
+**Cause:** the harness cut `scheduler-2` off the network at 12:40:45 and `scheduler-1` at 12:41:48, and neither logged anything again: no campaign, no renewal, no reaping. Campaign, renewal and each chore transaction ran on the process's lifetime context, with no deadline. A network cut leaves a pooled connection silently dead, and the server's "terminating connection" message is lost rather than delayed. A query on such a connection gets no reply and no error, and waits until TCP gives up, many minutes later. So a leader could neither lead nor step down, and the other scheduler's campaign hung the same way. It's the HTTP/2 bug from week 7 again, this time on the database connections.
+
+**Reproduction:** `TestLeadsAgainAfterSilentlyDeadConnections` puts a proxy between the scheduler and Postgres that, when cut, swallows bytes and closes in both directions. It cuts for 12 s (longer than the server's 10 s idle-in-transaction timeout, which otherwise rescues a stuck chore transaction, though never a stuck renewal), heals, and requires the scheduler to lead again. Before the fix it never did; with a 4 s cut the test passed anyway, because the server's timeout freed the stuck transaction.
+
+**Fix:** every leadership step has a deadline of a third of the lease (5 s). pgx closes a connection whose call times out, so the dead socket is gone too. With renewals every TTL/3, a chore of at most TTL/3 keeps each renewal inside the lease.
+
+**Lesson:** every call that crosses the network needs a deadline, even inside "infrastructure" loops. A loop that can block forever is a single point of failure that no number of replicas fixes.
+
 ## 2026-10-09 · A failing chaos run would have passed CI (workflow bug)
 
 **Found by:** the first stop-VM experiment on a GitHub runner (week 12). The probe reported `1 failed`, but the workflow run was green.

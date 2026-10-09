@@ -37,7 +37,7 @@ Behind the gateways, a request that can't reach its nearest `jobs` or `auth` is 
 | 6 | `d78db54` | gateway ready only with its upstreams | 3,622 requests, **0 failed** |
 | 7 | `7dc66ab` | experiment workflow; CI actions on Node 24 | 3,385 requests, **0 failed** |
 
-Each rollout restarts every service in both clouds, and each passed the full CI and a 5-minute chaos run first (every checker verdict: PASS).
+Each rollout restarts every service in both clouds, and each passed the full CI and a 5-minute chaos run first (every checker verdict: PASS). The next release, `3fcba90`, was stopped by its chaos run; see below.
 
 ## Stopping a stateless VM
 
@@ -54,7 +54,8 @@ Every failure came from the stopping VM's own address within 5 s of the stop: re
 
 - **The first stop-VM attempt failed the check:** after `svc-a` restarted, two requests hung for 10 s. A gateway then reported ready as soon as it had signing keys, so Traffic Manager returned it while its VM's `jobs` couldn't yet serve. Since `d78db54` a gateway is ready only when its nearest `jobs` and `auth` are.
 - **Running the experiment from the admin laptop was unreliable:** its home connection dropped requests to a VM that was up, and it slept for 6 minutes during one run. The experiments moved to a GitHub runner, which is also where the release probe runs.
-- **Three bugs**, in the [bug diary](../bugs.md): the second gateway issued its own certificate instead of sharing the first's; a failing chaos run or probe could pass a workflow (`| tee` without `pipefail`; no chaos run had actually failed); and new HTTP/2 advisories against Go 1.27.1 (fixed by Go 1.27.2 and `x/net` 0.60.0).
+- **The chaos gate caught a real bug** once the `pipefail` fix let it fail: in release `3fcba90`'s CI, after the harness cut both schedulers off the network in turn, neither led again, because their database calls had no deadlines, and 66 jobs were left unreaped. Leadership steps now have deadlines, with a test that reproduces the dead connection (bug diary).
+- **Three more bugs**, in the [bug diary](../bugs.md): the second gateway issued its own certificate instead of sharing the first's; a failing chaos run or probe could pass a workflow (`| tee` without `pipefail`; no chaos run had actually failed); and new HTTP/2 advisories against Go 1.27.1 (fixed by Go 1.27.2 and `x/net` 0.60.0).
 
 ## Still single
 
