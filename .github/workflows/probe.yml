@@ -1,0 +1,41 @@
+# The external probe on a schedule: the uptime monitor (deployment_plan.md). Every 15 minutes a
+# GitHub-hosted runner, outside both clouds, sends about 10 requests a second through the public
+# name for 2 minutes and never retries; one failed request fails the run, and GitHub emails the
+# owner. Run by hand (or by deploy/experiments/stop-vm.sh) for any duration.
+name: probe
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      for:
+        description: "How long to probe (Go duration, e.g. 8m)"
+        default: 2m
+
+permissions: { contents: read, id-token: write }
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: probe # its role can read the smoke user's password and nothing else
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_PROBE_ROLE_ARN }}
+          aws-region: ap-south-1
+      - name: probe
+        env:
+          FOR: ${{ inputs.for || '2m' }}
+        run: |
+          export PROBE_PASSWORD=$(aws ssm get-parameter --name /tq/ci/smoke-password --with-decryption --query Parameter.Value --output text)
+          go run ./deploy/release/probe -url https://tq-aniruddha81.trafficmanager.net -for "$FOR" | tee probe.log || {
+            sed -n 's/^probe: FAILED/::error::&/p' probe.log
+            echo "::error::$(tail -1 probe.log)"
+            exit 1
+          }
+          echo "::notice::$(tail -1 probe.log)"

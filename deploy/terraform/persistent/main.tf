@@ -195,6 +195,39 @@ resource "aws_iam_role_policy" "github_release" {
   })
 }
 
+# The external probe (probe.yml: every 15 minutes, and on demand for experiments) signs in as
+# the smoke user. Its environment, `probe`, gets a role that can read that password and nothing
+# else, so the scheduled runs on main never need the deploy role.
+resource "aws_iam_role" "github_probe" {
+  name = "tq-github-probe"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo_with_ids}:environment:probe"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "github_probe" {
+  role = aws_iam_role.github_probe.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "ssm:GetParameter"
+      Resource = "arn:aws:ssm:ap-south-1:${data.aws_caller_identity.me.account_id}:parameter/tq/ci/smoke-password"
+    }]
+  })
+}
+
 resource "azuread_application" "github_release" {
   display_name = "tq-github-release"
 }
@@ -273,6 +306,7 @@ resource "aws_iam_role_policy_attachment" "budget_action" {
 # ---------- Outputs: read by the session stack, and set as GitHub variables by make bootstrap ----------
 
 output "aws_role_arn" { value = aws_iam_role.github_release.arn }
+output "aws_probe_role_arn" { value = aws_iam_role.github_probe.arn }
 output "azure_client_id" { value = azuread_application.github_release.client_id }
 output "azure_tenant_id" { value = data.azurerm_client_config.me.tenant_id }
 output "azure_subscription_id" { value = data.azurerm_subscription.me.subscription_id }
