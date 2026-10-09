@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/time/rate"
@@ -65,7 +66,10 @@ func main() {
 		Rate:   rate.Limit(limit), Burst: burst, Log: log,
 	})
 	mux := http.NewServeMux()
-	serve.Health(mux, verifier.Ready)
+	// Ready only when it could serve through its own VM: Traffic Manager returns a gateway in
+	// DNS only while /readyz passes, and after a reboot the VM's jobs can be up before it can
+	// reach the database (the twin's upstreams are only for failover).
+	serve.Health(mux, verifier.Ready, upstreamReady(client, jobsURLs[0]), upstreamReady(client, authURLs[0]))
 	mux.Handle("/", h)
 	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8443"), mux, publicTLS(certs, os.Getenv("ACME_DOMAIN"), cache)); err != nil {
 		fail("serve", err)
@@ -109,4 +113,25 @@ func urlList(s string) ([]*url.URL, error) {
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+// upstreamReady checks an upstream's own /readyz, briefly: Traffic Manager probes every 10 s.
+func upstreamReady(c *http.Client, u *url.URL) func(context.Context) error {
+	return func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "GET", u.JoinPath("/readyz").String(), nil)
+		if err != nil {
+			return err
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("%s not ready: %s", u.Host, resp.Status)
+		}
+		return nil
+	}
 }
