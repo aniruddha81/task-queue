@@ -1,6 +1,6 @@
 # git push origin main:release  ->  tested, built and deployed in place, with rollback.
-# Stages (deployment_plan.md): verify, build, deploy. The infrastructure stage (week 13) and
-# the external no-retry probe (week 12) join later.
+# Stages (deployment_plan.md): verify, build, deploy (with the external no-retry probe,
+# run by rollout.sh from this runner). The infrastructure stage joins in week 13.
 name: release
 on:
   push:
@@ -113,6 +113,9 @@ jobs:
     permissions: { contents: read, id-token: write }
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7 # the external probe
+        with:
+          go-version-file: go.mod
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN || 'arn:aws:iam::573693339820:role/tq-github-release' }}

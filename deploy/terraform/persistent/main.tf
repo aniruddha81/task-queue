@@ -225,6 +225,13 @@ resource "azurerm_role_assignment" "github_release_record" {
   principal_id         = azuread_service_principal.github_release.object_id
 }
 
+# Draining a gateway during a deploy: disable, then re-enable, its Traffic Manager endpoint.
+resource "azurerm_role_assignment" "github_traffic_manager" {
+  scope                = azurerm_traffic_manager_profile.tm.id
+  role_definition_name = "Traffic Manager Contributor"
+  principal_id         = azuread_service_principal.github_release.object_id
+}
+
 # ---------- Budget guardrail: credits excluded, so it measures what would really be billed ----------
 
 resource "aws_budgets_budget" "tq" {

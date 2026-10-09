@@ -6,6 +6,7 @@ import (
 
 	"github.com/aniruddha81/task-queue/internal/devca"
 	"github.com/aniruddha81/task-queue/internal/tlsconf"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 // A probe or client that doesn't ask for the public name gets the project certificate,
@@ -18,10 +19,10 @@ func TestPublicTLSFallsBackToProjectCert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg := publicTLS(certs, "", t.TempDir()); cfg.GetCertificate != nil || len(cfg.Certificates) != 1 {
+	if cfg := publicTLS(certs, "", autocert.DirCache(t.TempDir())); cfg.GetCertificate != nil || len(cfg.Certificates) != 1 {
 		t.Fatal("without a domain the project certificate is served directly")
 	}
-	cfg := publicTLS(certs, "tq-test.trafficmanager.net", t.TempDir())
+	cfg := publicTLS(certs, "tq-test.trafficmanager.net", autocert.DirCache(t.TempDir()))
 	for _, sni := range []string{"", "10.0.0.1", "other.example.com"} {
 		got, err := cfg.GetCertificate(&tls.ClientHelloInfo{ServerName: sni})
 		if err != nil || string(got.Certificate[0]) != string(pair.Certificate[0]) {

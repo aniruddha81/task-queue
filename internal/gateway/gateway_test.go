@@ -40,7 +40,7 @@ func setup(t *testing.T) (*httptest.Server, *seen, ed25519.PrivateKey) {
 	ju, _ := url.Parse(jobs.URL)
 	au, _ := url.Parse(authSrv.URL)
 	gw := httptest.NewServer(New(Config{
-		Auth: au, Jobs: ju, Verifier: authn.NewVerifier(pub), Origin: origin,
+		Auth: []*url.URL{au}, Jobs: []*url.URL{ju}, Verifier: authn.NewVerifier(pub), Origin: origin,
 		Static: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("dashboard")) }),
 		Rate:   1, Burst: 3, Log: slog.New(slog.DiscardHandler),
 	}))

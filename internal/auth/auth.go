@@ -5,6 +5,7 @@
 //	POST /v1/auth/logout          clears the cookie (the token itself stays valid until it expires)
 //	POST /v1/auth/users           admin only: {email, password, admin}
 //	GET  /.well-known/jwks.json   public keys
+//	     /internal/acme/{key}     the gateways' shared certificate cache (gateway's mTLS cert only)
 package auth
 
 import (
@@ -58,6 +59,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/auth/login", s.login)
 	mux.HandleFunc("POST /v1/auth/logout", s.logout)
 	mux.HandleFunc("POST /v1/auth/users", s.createUser)
+	mux.HandleFunc("/internal/acme/{key}", s.acme) // the gateways' shared certificate cache
 	mux.HandleFunc("GET /.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "max-age=300")

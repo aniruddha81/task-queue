@@ -1,6 +1,7 @@
 // Command gateway is the public entry point (see internal/gateway).
 //
-// Environment: AUTH_URL, JOBS_URL (https upstreams), PUBLIC_ORIGIN (e.g.
+// Environment: AUTH_URL, JOBS_URL (https upstreams; comma-separated, nearest first, the
+// rest tried when one is down), PUBLIC_ORIGIN (e.g.
 // https://localhost:8443), STATIC_DIR (the dashboard export), RATE_LIMIT and RATE_BURST
 // (per user; defaults 20/s and 40), TLS_DIR. In the cloud, ACME_DOMAIN (the Traffic
 // Manager name) gets a Let's Encrypt certificate, cached in ACME_CACHE (default /acme).
@@ -10,12 +11,15 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/crypto/acme/autocert"
@@ -37,20 +41,25 @@ func main() {
 	if err != nil {
 		fail("certificates", err)
 	}
-	authURL, err1 := url.Parse(os.Getenv("AUTH_URL"))
-	jobsURL, err2 := url.Parse(os.Getenv("JOBS_URL"))
-	if err1 != nil || err2 != nil || authURL.Host == "" || jobsURL.Host == "" {
-		fail("AUTH_URL and JOBS_URL", err1)
+	authURLs, err1 := urlList(os.Getenv("AUTH_URL"))
+	jobsURLs, err2 := urlList(os.Getenv("JOBS_URL"))
+	if err := errors.Join(err1, err2); err != nil {
+		fail("AUTH_URL and JOBS_URL", err)
 	}
 	limit, _ := strconv.ParseFloat(cmp.Or(os.Getenv("RATE_LIMIT"), "20"), 64)
 	burst, _ := strconv.Atoi(cmp.Or(os.Getenv("RATE_BURST"), "40"))
 	client := serve.Client(certs)
 
 	verifier := authn.NewVerifier()
-	go verifier.Watch(ctx, authURL.JoinPath("/.well-known/jwks.json").String(), client, log)
+	jwks := make([]string, len(authURLs))
+	for i, u := range authURLs {
+		jwks[i] = u.JoinPath("/.well-known/jwks.json").String()
+	}
+	go verifier.Watch(ctx, strings.Join(jwks, ","), client, log)
+	cache := sharedCache{local: autocert.DirCache(cmp.Or(os.Getenv("ACME_CACHE"), "/acme")), auth: authURLs, client: client}
 
 	h := gateway.New(gateway.Config{
-		Auth: authURL, Jobs: jobsURL, Transport: client.Transport, Verifier: verifier,
+		Auth: authURLs, Jobs: jobsURLs, Transport: client.Transport, Verifier: verifier,
 		Origin: os.Getenv("PUBLIC_ORIGIN"),
 		Static: http.FileServer(http.Dir(cmp.Or(os.Getenv("STATIC_DIR"), "/static"))),
 		Rate:   rate.Limit(limit), Burst: burst, Log: log,
@@ -58,7 +67,7 @@ func main() {
 	mux := http.NewServeMux()
 	serve.Health(mux, verifier.Ready)
 	mux.Handle("/", h)
-	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8443"), mux, publicTLS(certs, os.Getenv("ACME_DOMAIN"), cmp.Or(os.Getenv("ACME_CACHE"), "/acme"))); err != nil {
+	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8443"), mux, publicTLS(certs, os.Getenv("ACME_DOMAIN"), cache)); err != nil {
 		fail("serve", err)
 	}
 }
@@ -67,9 +76,7 @@ func main() {
 // for it, obtained and renewed through TLS-ALPN-01 on this same port. Other server names
 // (Traffic Manager's health probe, a client dialing the IP) still get the project
 // certificate, so the gateway answers before its public certificate exists.
-// ponytail: autocert's directory cache is per gateway; two gateways each get their own
-// certificate, which is fine until Let's Encrypt's rate limit for the name matters.
-func publicTLS(certs *tlsconf.Bundle, domain, cacheDir string) *tls.Config {
+func publicTLS(certs *tlsconf.Bundle, domain string, cache autocert.Cache) *tls.Config {
 	cfg := certs.Public()
 	if domain == "" {
 		return cfg
@@ -77,7 +84,7 @@ func publicTLS(certs *tlsconf.Bundle, domain, cacheDir string) *tls.Config {
 	m := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: autocert.HostWhitelist(domain),
-		Cache:      autocert.DirCache(cacheDir),
+		Cache:      cache,
 	}
 	acme := m.TLSConfig()
 	acme.MinVersion = tls.VersionTLS12
@@ -89,4 +96,17 @@ func publicTLS(certs *tlsconf.Bundle, domain, cacheDir string) *tls.Config {
 		return m.GetCertificate(hello)
 	}
 	return acme
+}
+
+// urlList parses a comma-separated list of upstream URLs, nearest first.
+func urlList(s string) ([]*url.URL, error) {
+	var out []*url.URL
+	for _, part := range strings.Split(s, ",") {
+		u, err := url.Parse(strings.TrimSpace(part))
+		if err != nil || u.Host == "" {
+			return nil, fmt.Errorf("bad upstream URL %q", part)
+		}
+		out = append(out, u)
+	}
+	return out, nil
 }

@@ -4,6 +4,7 @@ services:
     image: ${IMAGE}/auth:${TAG}
     network_mode: host
     restart: unless-stopped
+    stop_grace_period: 35s # in-flight requests finish (the server allows 30 s); its twin takes new ones
     volumes: ["/etc/tq/certs:/certs:ro"]
     environment:
       TLS_DIR: /certs

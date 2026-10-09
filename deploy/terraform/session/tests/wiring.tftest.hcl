@@ -67,20 +67,32 @@ override_data {
   }
 }
 
-run "act1" {
+run "stateless_twins" { # the default role map: week 12
   command = apply
 
   assert {
-    condition     = [for v in jsondecode(aws_ssm_parameter.topology.value).vms : v.name] == ["pg-a", "ops-a", "svc-z", "svc-a", "work-a", "work-z"]
-    error_message = "rollout order: data, ops, auth's VM, the other services, workers"
+    condition     = [for v in jsondecode(aws_ssm_parameter.topology.value).vms : v.name] == ["pg-a", "ops-a", "svc-a", "svc-z", "work-a", "work-z"]
+    error_message = "rollout order: data, ops, the service VMs one at a time, workers"
   }
   assert {
     condition     = [for v in jsondecode(aws_ssm_parameter.topology.value).vms : v.stage] == ["data", "app", "app", "app", "app", "app"]
     error_message = "only database VMs are in the data stage"
   }
   assert {
-    condition     = strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "AUTH_URL='https://svc-z:8083'")
-    error_message = "the AWS gateway calls auth in Azure (Act 1)"
+    condition     = strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "AUTH_URL='https://svc-a:8083,https://svc-z:8083'")
+    error_message = "a gateway calls its own cloud's auth, with the other cloud's as its twin"
+  }
+  assert {
+    condition     = strcontains(jsondecode(azurerm_key_vault_secret.vm["svc-z"].value)["tq.env"], "JOBS_URL='https://svc-z:8080,https://svc-a:8080'")
+    error_message = "the Azure gateway calls jobs in Azure first"
+  }
+  assert {
+    condition     = strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "JWKS_URL='https://svc-a:8083/.well-known/jwks.json,https://svc-z:8083/.well-known/jwks.json'")
+    error_message = "jobs can fetch the signing keys from either auth"
+  }
+  assert {
+    condition     = jsondecode(aws_ssm_parameter.topology.value).tm != ""
+    error_message = "rollout.sh knows the Traffic Manager profile, to drain gateways"
   }
   assert {
     condition     = strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "ACME_DOMAIN='tq-test.trafficmanager.net'")
@@ -99,12 +111,12 @@ run "act1" {
     error_message = "workers never receive database credentials"
   }
   assert {
-    condition     = !strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "JWT_PRIVATE_KEY")
-    error_message = "only auth holds the signing key"
+    condition     = !strcontains(aws_ssm_parameter.file["ops-a/tq.env"].value, "JWT_PRIVATE_KEY") && !strcontains(aws_ssm_parameter.file["work-a/tq.env"].value, "JWT_PRIVATE_KEY")
+    error_message = "only auth's VMs hold the signing key"
   }
   assert {
     condition     = strcontains(aws_ssm_parameter.file["pg-a/tq.env"].value, "ETCD_INITIAL_CLUSTER='pg-a=http://pg-a:2380'")
-    error_message = "Act 1 runs a one-member etcd on pg-a"
+    error_message = "one database until week 13: a one-member etcd on pg-a"
   }
   assert {
     condition     = contains(keys(aws_ssm_parameter.file), "ops-a/prometheus.yml") && !contains(keys(aws_ssm_parameter.file), "svc-a/prometheus.yml")
@@ -115,16 +127,16 @@ run "act1" {
     error_message = "a VM gets only its own roles' keys"
   }
   assert {
-    condition     = keys(azurerm_traffic_manager_external_endpoint.gateway) == ["svc-a"]
-    error_message = "Act 1 has one gateway endpoint"
+    condition     = keys(azurerm_traffic_manager_external_endpoint.gateway) == ["svc-a", "svc-z"]
+    error_message = "both gateways are Traffic Manager endpoints"
   }
   assert {
-    condition     = length(azurerm_network_security_group.vms[0].security_rule) == 1
-    error_message = "no gateway in Azure, so nothing opens 443 there"
+    condition     = length(azurerm_network_security_group.vms[0].security_rule) == 2
+    error_message = "the Azure gateway opens 443"
   }
 }
 
-run "act2" {
+run "act2_full" { # week 13: the database in both clouds and the witness
   command = apply
   variables {
     vms = {
@@ -148,7 +160,7 @@ run "act2" {
     error_message = "three etcd members, one per site"
   }
   assert {
-    condition     = strcontains(jsondecode(azurerm_key_vault_secret.vm["svc-z"].value)["tq.env"], "AUTH_URL='https://svc-z:8083'")
+    condition     = strcontains(jsondecode(azurerm_key_vault_secret.vm["svc-z"].value)["tq.env"], "AUTH_URL='https://svc-z:8083,https://svc-a:8083'")
     error_message = "each gateway calls its own cloud's auth"
   }
   assert {

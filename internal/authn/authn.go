@@ -121,15 +121,24 @@ func (v *Verifier) FromRequest(r *http.Request) (Identity, error) {
 }
 
 // Watch loads keys from a JWKS URL now (retrying until it works) and refreshes them
-// hourly, so a rotated key is picked up. It returns when ctx ends.
-func (v *Verifier) Watch(ctx context.Context, url string, client *http.Client, log *slog.Logger) {
+// hourly, so a rotated key is picked up. It returns when ctx ends. urls may list several,
+// comma-separated and nearest first (every auth instance serves the same keys); each
+// attempt tries them in order, so one auth being down doesn't stall the start.
+func (v *Verifier) Watch(ctx context.Context, urls string, client *http.Client, log *slog.Logger) {
+	list := strings.Split(urls, ",")
 	for wait := time.Second; ctx.Err() == nil; {
-		keys, err := FetchJWKS(ctx, client, url)
+		var keys []ed25519.PublicKey
+		var err error
+		for _, url := range list {
+			if keys, err = FetchJWKS(ctx, client, url); err == nil {
+				break
+			}
+		}
 		if err == nil {
 			v.set(keys)
 			wait = time.Hour
 		} else if ctx.Err() == nil {
-			log.Warn("fetch JWKS", "url", url, "err", err)
+			log.Warn("fetch JWKS", "urls", urls, "err", err)
 			if v.Ready(ctx) == nil {
 				wait = time.Minute // keep the old keys and try again soon
 			}

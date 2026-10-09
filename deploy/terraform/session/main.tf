@@ -31,13 +31,16 @@ variable "vms" {
     region = optional(string)
     size   = optional(string)
   }))
-  # Act 1 (v4 plan, placement table): one gateway and one database, the rest split.
+  # Act 2's stateless tier (week 12): every stateless service in both clouds, so each has a
+  # twin to fail over to and to serve while it is deployed. Act 1 (week 11) had the gateway
+  # and jobs on svc-a only and auth on svc-z only; see docs/results/act1-fragility.md.
+  # One database still (pg-a) until week 13.
   default = {
-    "svc-a"  = { cloud = "aws", mesh = 11, roles = ["gateway", "jobs", "dispatch", "scheduler"] }
+    "svc-a"  = { cloud = "aws", mesh = 11, roles = ["gateway", "auth", "jobs", "dispatch", "scheduler"] }
     "work-a" = { cloud = "aws", mesh = 12, roles = ["worker"] }
     "pg-a"   = { cloud = "aws", mesh = 13, roles = ["etcd", "postgres"] }
     "ops-a"  = { cloud = "aws", mesh = 14, roles = ["ops"] }
-    "svc-z"  = { cloud = "azure", mesh = 21, roles = ["auth", "dispatch", "scheduler"] }
+    "svc-z"  = { cloud = "azure", mesh = 21, roles = ["gateway", "auth", "jobs", "dispatch", "scheduler"] }
     "work-z" = { cloud = "azure", mesh = 22, roles = ["worker"] }
     # Act 2 (week 13) adds:
     # "pg-z" = { cloud = "azure", mesh = 23, roles = ["etcd", "postgres"] }
@@ -142,8 +145,8 @@ locals {
   env = { for n, v in local.vms : n => merge(
     { VM_NAME = n, CLOUD = v.cloud, MESH_IP = v.mesh_ip, ROLES = join(" ", v.roles), IMAGE = "ghcr.io/${var.github_repo}" },
     contains(v.roles, "gateway") ? {
-      AUTH_URL      = "https://${local.near[n].auth[0]}:8083"
-      JOBS_URL      = "https://${local.near[n].jobs[0]}:8080"
+      AUTH_URL      = join(",", [for m in local.near[n].auth : "https://${m}:8083"]) # nearest first;
+      JOBS_URL      = join(",", [for m in local.near[n].jobs : "https://${m}:8080"]) # the rest are its twins
       PUBLIC_ORIGIN = "https://${local.p.public_fqdn}"
       ACME_DOMAIN   = local.p.public_fqdn
     } : {},
@@ -152,7 +155,10 @@ locals {
       JWT_PRIVATE_KEY = random_bytes.jwt.base64
       SEED_USERS      = join(",", [for u, role in { admin = ":admin", demo = "", smoke = "" } : "${u}@example.com:${random_password.pw["user_${u}"].result}${role}"])
     } : {},
-    contains(v.roles, "jobs") ? { JOBS_DB_URL = local.db_url.jobs, AUTH_URL = "https://${local.near[n].auth[0]}:8083" } : {},
+    contains(v.roles, "jobs") ? {
+      JOBS_DB_URL = local.db_url.jobs
+      JWKS_URL    = join(",", [for m in local.near[n].auth : "https://${m}:8083/.well-known/jwks.json"])
+    } : {},
     contains(v.roles, "dispatch") || contains(v.roles, "scheduler") ? { JOBS_DB_URL = local.db_url.jobs } : {},
     contains(v.roles, "worker") ? {
       DISPATCHERS   = join(",", [for m in local.near[n].dispatch : "https://${m}:8081"])
@@ -304,6 +310,7 @@ resource "aws_ssm_parameter" "topology" {
   type = "String"
   value = jsonencode({
     fqdn  = local.p.public_fqdn
+    tm    = local.p.traffic_manager_profile_id # rollout.sh drains a gateway by disabling its endpoint
     vault = local.p.key_vault_name
     ops   = local.ops_vm
     vms = [for n in local.order : {

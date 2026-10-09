@@ -24,7 +24,7 @@ import (
 const maxBody = 64 << 10
 
 type Config struct {
-	Auth, Jobs *url.URL          // upstreams
+	Auth, Jobs []*url.URL        // upstreams, nearest first; the rest are tried when one is down
 	Transport  http.RoundTripper // mTLS to the upstreams
 	Verifier   *authn.Verifier
 	Origin     string       // the dashboard's origin, e.g. https://localhost:8443; cookie writes must come from it
@@ -57,16 +57,20 @@ func New(cfg Config) http.Handler {
 	return headers(limitBody(mux))
 }
 
-func proxy(target *url.URL, cfg Config) *httputil.ReverseProxy {
+func proxy(targets []*url.URL, cfg Config) *httputil.ReverseProxy {
+	next := cfg.Transport
+	if next == nil {
+		next = http.DefaultTransport
+	}
 	return &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(target)
+			r.SetURL(targets[0])
 			r.SetXForwarded()
 			r.Out.Header.Del("Cookie") // upstreams authenticate by bearer token only
 		},
-		Transport: cfg.Transport,
+		Transport: failover{next, targets},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			cfg.Log.Warn("upstream", "host", target.Host, "err", err)
+			cfg.Log.Warn("upstream", "path", r.URL.Path, "err", err)
 			http.Error(w, `{"error":"upstream unavailable"}`, http.StatusBadGateway)
 		},
 	}
