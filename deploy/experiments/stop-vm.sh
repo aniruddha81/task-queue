@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# stop-vm.sh <vm>: stop one VM for 2 minutes while the external probe runs on a GitHub-hosted
-# runner (probe.yml), outside both clouds, as every rollout's probe does. Week 12's check:
-# stopping any one stateless VM fails no request beyond those in flight on it. Prints the stop
-# and start times and the probe's verdict, with each failed request. Run from an admin machine
-# signed in to the aws, az and gh CLIs (with jq).
+# stop-vm.sh <vm>: stop one VM for 2 minutes while the external probe (the one every rollout
+# runs) sends requests through the public name and never retries. Week 12's check: stopping
+# any one stateless VM fails no request beyond those in flight on it. Prints the stop and start
+# times and the probe's verdict, with each failed request.
+# Runs on a GitHub-hosted runner through experiment.yml (stable network, outside both clouds);
+# an admin machine signed in to the aws and az CLIs (with jq and Go) works too, if its network
+# is steady enough not to fail the probe itself.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 name=${1:?usage: stop-vm.sh <vm>}
@@ -11,12 +13,13 @@ name=${1:?usage: stop-vm.sh <vm>}
 id=$(vm "$name" id)
 log() { echo "$(date -u +%T) $*"; }
 
-gh workflow run probe.yml --ref main -f for=8m
-sleep 10
-run_id=$(gh run list --workflow probe.yml --event workflow_dispatch --limit 1 --json databaseId -q '.[0].databaseId')
-log "probe run $run_id: waiting for it to start probing"
-until [ "$(gh run view "$run_id" --json jobs -q '.jobs[0].steps[] | select(.name == "probe") | .status')" = in_progress ]; do sleep 5; done
-sleep 90 # compiling (about 30 s), then a minute of probing before the stop
+probe_bin="./tq-probe$(go env GOEXE)" # relative: Windows Go and bash disagree on /tmp
+trap 'rm -f "$probe_bin"' EXIT
+go build -o "$probe_bin" ./deploy/release/probe
+PROBE_PASSWORD=$(aws ssm get-parameter --region "$region" --name /tq/ci/smoke-password --with-decryption --query Parameter.Value --output text) \
+  "$probe_bin" -url "https://$fqdn" -for 8m &
+probe=$!
+sleep 60
 
 log "stop $name"
 if [ "$(vm "$name" cloud)" = aws ]; then
@@ -33,9 +36,8 @@ if [ "$(vm "$name" cloud)" = aws ]; then
 else
   az vm start -g "$(vm "$name" rg)" -n "$id" -o none
 fi
-log "started; the probe runs on to its 8 minutes"
+log "started; the probe runs on until 8 minutes"
 rc=0
-gh run watch "$run_id" --exit-status >/dev/null 2>&1 || rc=$?
-gh run view "$run_id" --log | grep -oE 'probe: ([0-9]+ requests|FAILED [A-Z]).*' | sort -u
-log "probe run $run_id: $([ $rc = 0 ] && echo passed || echo failed)"
+wait "$probe" || rc=$?
+log "probe exit $rc"
 exit "$rc"

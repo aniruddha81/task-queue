@@ -1,0 +1,41 @@
+# Experiments against the running cloud that need a stable vantage point outside both clouds:
+# a GitHub-hosted runner stops a VM while the external probe runs beside it. Started by hand:
+#   gh workflow run experiment.yml --ref release -f vm=svc-a
+name: experiment
+on:
+  workflow_dispatch:
+    inputs:
+      vm:
+        description: "The VM to stop for 2 minutes (e.g. svc-a, svc-z)"
+        required: true
+
+concurrency: { group: deploy-cloud, cancel-in-progress: false } # never during a rollout
+permissions: { contents: read, id-token: write }
+
+jobs:
+  stop-vm:
+    runs-on: ubuntu-latest
+    environment: cloud
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ap-south-1
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: stop ${{ inputs.vm }} under the probe
+        run: |
+          bash deploy/experiments/stop-vm.sh "${{ inputs.vm }}" 2>&1 | tee experiment.log || {
+            sed -n 's/^probe: FAILED/::error::&/p' experiment.log
+            echo "::error::$(grep -E '^probe: [0-9]+ requests' experiment.log)"
+            exit 1
+          }
+          echo "::notice::$(grep -E '^probe: [0-9]+ requests' experiment.log)"

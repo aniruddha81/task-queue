@@ -184,6 +184,13 @@ resource "aws_iam_role_policy" "github_release" {
         Resource = "*"
       },
       {
+        # experiment.yml stops and starts a session VM under the probe
+        Effect    = "Allow"
+        Action    = ["ec2:StopInstances", "ec2:StartInstances"]
+        Resource  = "arn:aws:ec2:*:${data.aws_caller_identity.me.account_id}:instance/*"
+        Condition = { StringEquals = { "aws:ResourceTag/stack" = "session" } }
+      },
+      {
         Effect = "Allow"
         Action = ["ssm:GetParameter", "ssm:PutParameter"]
         Resource = [
