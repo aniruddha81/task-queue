@@ -36,6 +36,6 @@ fi
 log "started; the probe runs on to its 8 minutes"
 rc=0
 gh run watch "$run_id" --exit-status >/dev/null 2>&1 || rc=$?
-gh run view "$run_id" --log | grep -oE 'probe: .*' | sort -u
+gh run view "$run_id" --log | grep -oE 'probe: ([0-9]+ requests|FAILED [A-Z]).*' | sort -u
 log "probe run $run_id: $([ $rc = 0 ] && echo passed || echo failed)"
 exit "$rc"
