@@ -3,6 +3,7 @@
 #   gh workflow run experiment.yml --ref release -f vm=svc-a               stop a VM under the probe
 #   gh workflow run experiment.yml --ref release -f scenario=stop-leader   act1.sh: a fault under
 #                                                  the chaos harness, its checker and the probe
+#   gh workflow run experiment.yml --ref release -f bench=true            load.sh: the cloud load test
 # Results (the checker's report and the probe's summary) are uploaded as the run's artifact.
 name: experiment
 on:
@@ -12,7 +13,7 @@ on:
         description: "stop-vm.sh: the VM to stop for 2 minutes (e.g. svc-a, svc-z)"
         required: false
       scenario:
-        description: "act1.sh: cut-clouds, stop-leader, stop-wit, watch, ..."
+        description: "act1.sh: cut-clouds, stop-leader, stop-<vm>, pause-<vm>, watch, ..."
         required: false
       label:
         description: "act1.sh: results name (default act1-<scenario>)"
@@ -23,6 +24,10 @@ on:
       hold:
         description: "act1.sh: seconds the fault is held (default 120)"
         required: false
+      bench:
+        description: "load.sh: the cloud load test"
+        type: boolean
+        default: false
 
 concurrency: { group: deploy-cloud, cancel-in-progress: false } # never during a rollout
 permissions: { contents: read, id-token: write }
@@ -77,7 +82,12 @@ jobs:
           grep -h '^\*\*probe:' out/*-probe.md | sed 's/\*//g; s/^/::notice::/' || true
           grep -hE '^\| .*FAIL' out/chaos-*.md | sed 's/^/::error::/' || true
           exit $rc
-      - if: always() && inputs.scenario
+      - if: inputs.bench
+        name: cloud load test
+        env:
+          RESULTS: out
+        run: bash deploy/experiments/load.sh
+      - if: always() && (inputs.scenario || inputs.bench)
         uses: actions/upload-artifact@v7
         with:
           name: results

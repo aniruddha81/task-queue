@@ -7,6 +7,10 @@
 // Jobs are inserted straight into the database (the API isn't what's being measured) as
 // chaos.sleep with 0 ms, so the numbers are the scheduler's own overhead: claim, heartbeat,
 // complete, and the synchronous commit each of them waits for.
+//
+// In the cloud (deploy/experiments/load.sh runs it on ops-a), -cloud describes the deployment,
+// the workers already running are measured as they are (-workers is their count), and
+// synchronous mode is switched through Patroni's REST API (-patroni).
 package main
 
 import (
@@ -14,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
@@ -45,16 +50,20 @@ func main() {
 	rate := flag.Int("rate", 50, "jobs per second for the latency test")
 	steady := flag.Duration("steady", 30*time.Second, "length of the latency test")
 	out := flag.String("out", "docs/results/load-local.md", "report")
+	cloud := flag.String("cloud", "", "the deployment, for the report; set, the deployed workers are measured as they are")
+	patroni := flag.String("patroni", "", "Patroni REST URLs, comma-separated; empty: docker exec into the compose project")
 	flag.Parse()
 	ctx := context.Background()
 
 	var results []result
 	for _, sync := range []bool{true, false} {
-		setSync(*project, sync)
+		setSync(*project, *patroni, sync)
 		for _, w := range strings.Split(*workerList, ",") {
 			n, _ := strconv.Atoi(w)
-			run(exec.Command("docker", "compose", "-f", *compose, "up", "-d", "--no-recreate", "--scale", "worker="+w, "worker"))
-			time.Sleep(8 * time.Second) // workers start and begin long-polling
+			if *cloud == "" {
+				run(exec.Command("docker", "compose", "-f", *compose, "up", "-d", "--no-recreate", "--scale", "worker="+w, "worker"))
+				time.Sleep(8 * time.Second) // workers start and begin long-polling
+			}
 			r := result{workers: n, sync: sync, drainN: *drainN, steadyRate: *rate}
 			measure(ctx, *db, &r, *steady)
 			log.Printf("workers=%d sync=%v: %.0f jobs/s, latency p50 %.0f ms p95 %.0f ms", n, sync,
@@ -62,9 +71,11 @@ func main() {
 			results = append(results, r)
 		}
 	}
-	setSync(*project, true) // leave the cluster as configured
-	run(exec.Command("docker", "compose", "-f", *compose, "up", "-d", "--no-recreate", "--scale", "worker=2", "worker"))
-	if err := os.WriteFile(*out, []byte(report(results)), 0o644); err != nil {
+	setSync(*project, *patroni, true) // leave the cluster as configured
+	if *cloud == "" {
+		run(exec.Command("docker", "compose", "-f", *compose, "up", "-d", "--no-recreate", "--scale", "worker=2", "worker"))
+	}
+	if err := os.WriteFile(*out, []byte(report(results, *cloud)), 0o644); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("wrote %s", *out)
@@ -154,7 +165,21 @@ func sampleWaits(url string, into *map[string]int) (stop func()) {
 }
 
 // setSync turns Patroni's synchronous mode on or off and waits for it to take effect.
-func setSync(project string, on bool) {
+func setSync(project, patroni string, on bool) {
+	if patroni != "" {
+		body := fmt.Sprintf(`{"synchronous_mode": %t}`, on)
+		for _, u := range strings.Split(patroni, ",") {
+			req, _ := http.NewRequest(http.MethodPatch, u+"/config", strings.NewReader(body))
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					time.Sleep(10 * time.Second) // Patroni applies it on its next loop
+					return
+				}
+			}
+		}
+		log.Fatal("could not change synchronous_mode through ", patroni)
+	}
 	for _, node := range []string{"pg1", "pg2"} {
 		cmd := exec.Command("docker", "exec", project+"-"+node+"-1", "patronictl", "-c", "/etc/patroni.yml",
 			"edit-config", "--force", "--set", "synchronous_mode="+strconv.FormatBool(on))
@@ -172,10 +197,15 @@ func run(cmd *exec.Cmd) {
 	}
 }
 
-func report(rs []result) string {
+func report(rs []result, cloud string) string {
 	var b strings.Builder
-	b.WriteString("# Load baseline (local)\n\n")
-	fmt.Fprintf(&b, "Measured %s on one laptop (Docker Desktop, Windows), with the full local stack: two Patroni nodes with 5.5 ms of simulated cross-cloud round trip between them, one dispatch, workers with 8 slots each. Jobs are `chaos.sleep` with 0 ms, so this measures the scheduler's own overhead. Absolute numbers depend on the machine; the shape is the point.\n\n", time.Now().Format("2006-01-02"))
+	if cloud != "" {
+		b.WriteString("# Load (cloud)\n\n")
+		fmt.Fprintf(&b, "Measured %s in production: %s. Jobs are `chaos.sleep` with 0 ms, so this measures the scheduler's own overhead.\n\n", time.Now().Format("2006-01-02"), cloud)
+	} else {
+		b.WriteString("# Load baseline (local)\n\n")
+		fmt.Fprintf(&b, "Measured %s on one laptop (Docker Desktop, Windows), with the full local stack: two Patroni nodes with 5.5 ms of simulated cross-cloud round trip between them, one dispatch, workers with 8 slots each. Jobs are `chaos.sleep` with 0 ms, so this measures the scheduler's own overhead. Absolute numbers depend on the machine; the shape is the point.\n\n", time.Now().Format("2006-01-02"))
+	}
 	b.WriteString("| Sync replication | Workers | Drain throughput | Latency p50 | p95 | p99 | Dead tuples after |\n| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, r := range rs {
 		mode := "off"

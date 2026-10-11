@@ -9,7 +9,9 @@
 #   kill-gateway   kill the gateway; it stays down for 1 minute
 #   stop-leader    stop the Patroni leader's VM for 2 minutes: an automatic failover to the
 #                  other cloud; run it again to fail back
-#   stop-wit       stop the etcd witness for 2 minutes
+#   stop-<vm>      stop that VM (stop-wit: the etcd witness, stop-work-a, ...) for 2 minutes
+#   pause-<vm>     freeze every service container on that VM (docker pause), past every lease,
+#                  then thaw it: a long garbage-collection pause; its late writes must be fenced
 #   watch          no fault: load, probe and checker while someone else changes the cloud
 #                  (make infra REPLACE=pg-z); set LOAD and HOLD to cover it
 #
@@ -25,7 +27,7 @@
 # HARNESS_SHA picks the harness code (default: HEAD; it must be on GitHub).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-scenario=${1:?usage: act1.sh cut-clouds|stop-azure|stop-aws|kill-gateway|stop-leader|stop-wit|watch}
+scenario=${1:?usage: act1.sh cut-clouds|stop-azure|stop-aws|kill-gateway|stop-leader|stop-<vm>|pause-<vm>|watch}
 . deploy/release/vmrun.sh
 sha=${HARNESS_SHA:-$(git rev-parse HEAD)}
 hold=${HOLD:-120}
@@ -124,9 +126,17 @@ systemd-run --on-active=@HOLD@s --unit tq-fault-revert sh /run/tq-cut -D'
     log "the Patroni leader is $victim"
     stop_vm "$victim"
     ;;
-  stop-wit)
-    victim=wit
-    stop_vm wit
+  stop-?* | pause-?*)
+    victim=${scenario#*-}
+    [ -n "$(vm "$victim" id)" ] && [ "$victim" != "$ops" ] || { echo "no VM $victim to fault (and $ops never is)" >&2; exit 2; }
+    if [ "${scenario%%-*}" = stop ]; then
+      stop_vm "$victim"
+    else
+      run "$victim" "ids=\$(docker ps -q --filter name=tq-)
+        docker pause \$ids >/dev/null
+        systemctl reset-failed tq-fault-revert 2>/dev/null || true
+        systemd-run --on-active=${hold}s --unit tq-fault-revert docker unpause \$ids" >/dev/null
+    fi
     ;;
   watch) ;;
   *) echo "unknown scenario $scenario" >&2; exit 2 ;;
@@ -136,8 +146,8 @@ systemd-run --on-active=@HOLD@s --unit tq-fault-revert sh /run/tq-cut -D'
 revert() { # VM-side faults revert themselves; stopped VMs are started here
   case $scenario in
   stop-azure) az vm start --ids $(azure_ids) -o none ;;
-  stop-leader | stop-wit) start_vm "$victim" ;;
   stop-aws) aws ec2 start-instances --region "$region" --instance-ids $(for v in $aws_vms; do vm "$v" id; done) --output text >/dev/null ;;
+  stop-?*) start_vm "$victim" ;; # stop-leader too
   esac
 }
 
