@@ -96,7 +96,7 @@ func TestPausedLeaderIsFenced(t *testing.T) {
 	}
 
 	ran := false
-	_, err = a.chore(t.Context(), old, "test", func(*queue.Store) (int, error) { ran = true; return 1, nil })
+	_, err = a.chore(t.Context(), old, "test", func(context.Context, *queue.Store) (int, error) { ran = true; return 1, nil })
 	if !errors.Is(err, ErrNotLeader) || ran {
 		t.Errorf("stale chore: err=%v ran=%v, want ErrNotLeader and not run", err, ran)
 	}

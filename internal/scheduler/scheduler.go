@@ -137,10 +137,10 @@ func (s *Scheduler) lead(ctx context.Context, epoch int64) {
 		}
 		for _, c := range []struct {
 			name string
-			run  func(*queue.Store) (int, error)
+			run  func(context.Context, *queue.Store) (int, error)
 		}{
-			{"reap", func(st *queue.Store) (int, error) { return st.Reap(ctx, s.cfg.ReapBatch) }},
-			{"cron", func(st *queue.Store) (int, error) { return st.TickSchedules(ctx, s.cfg.TickBatch) }},
+			{"reap", func(ctx context.Context, st *queue.Store) (int, error) { return st.Reap(ctx, s.cfg.ReapBatch) }},
+			{"cron", func(ctx context.Context, st *queue.Store) (int, error) { return st.TickSchedules(ctx, s.cfg.TickBatch) }},
 		} {
 			n, err := s.chore(ctx, epoch, c.name, c.run)
 			if errors.Is(err, ErrNotLeader) {
@@ -161,7 +161,8 @@ func (s *Scheduler) lead(ctx context.Context, epoch int64) {
 // chore runs one chore in a transaction fenced on the leader's epoch. The FOR SHARE lock
 // on the lease row makes any takeover wait until this transaction ends, so chores of two
 // epochs never overlap; a stale epoch finds no row and changes nothing.
-func (s *Scheduler) chore(ctx context.Context, epoch int64, name string, run func(*queue.Store) (int, error)) (int, error) {
+// run gets the step's context: the chore's own queries need its deadline as much as the fence.
+func (s *Scheduler) chore(ctx context.Context, epoch int64, name string, run func(context.Context, *queue.Store) (int, error)) (int, error) {
 	// With renewals every TTL/3, a chore of at most TTL/3 keeps every renewal within the lease.
 	ctx, cancel := s.step(ctx)
 	defer cancel()
@@ -183,7 +184,7 @@ func (s *Scheduler) chore(ctx context.Context, epoch int64, name string, run fun
 	if err != nil {
 		return 0, err
 	}
-	n, err := run(queue.NewStore(tx))
+	n, err := run(ctx, queue.NewStore(tx))
 	if err != nil {
 		return 0, err
 	}

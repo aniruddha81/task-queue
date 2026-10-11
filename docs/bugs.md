@@ -2,6 +2,16 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-11 · The week-12 deadline fix missed the chore's own queries
+
+**Found by:** CI for release `4fcc718`: `TestLeadsAgainAfterSilentlyDeadConnections` failed ("leading again after the network healed: not within 20s"), in a package the release didn't touch. Locally, under `-race`, it failed 2 runs out of 6, and the failures were bimodal: a run led again after about 16 s or never.
+
+**Cause:** a goroutine dump taken while the test was stuck showed the scheduler inside `Store.Reap`, waiting on a dead connection. `chore` gave its transaction a step deadline, but the chore body (`Reap`, `TickSchedules`) was a closure over `lead`'s context, which has none. The fence query and the commit had deadlines; the work between them didn't. The test only hangs when the cut lands while a Reap is in flight, which is why it passed for two days.
+
+**Fix:** `chore` passes its step context into the chore body. The test now passes 12 runs out of 12 under `-race`.
+
+**Lesson:** "every step has a deadline" must include the closures a step calls; a context captured by a closure is a context nobody checks. A test that fails one run in three is still a test that fails: a flaky result here meant a real race between the fault and the work.
+
 ## 2026-10-09 · After a network cut, no scheduler led for 7 minutes, so expired leases piled up
 
 **Found by:** the chaos run in release `3fcba90`'s CI, the first that the `pipefail` fix let fail. G5 failed: 66 jobs were still `running` when the 5-minute quiesce ran out, long after their 30 s leases expired.
