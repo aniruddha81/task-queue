@@ -1,31 +1,41 @@
 #!/usr/bin/env bash
-# act1.sh <scenario>: one Act 1 fragility experiment (week 11), run from an admin machine
-# signed in to the aws and az CLIs (with jq).
+# act1.sh <scenario>: one fault experiment against the running cloud: Act 1's fragility
+# experiments (week 11) and Act 2's go-live gate (week 13). Runs on a GitHub runner through
+# experiment.yml, or from an admin machine signed in to the aws and az CLIs (with jq and Go).
 #
 #   cut-clouds     drop all mesh traffic between Azure and AWS for 2 minutes
 #   stop-azure     stop every Azure VM for 2 minutes
 #   stop-aws       stop every AWS VM except ops-a (never faulted) for 2 minutes
 #   kill-gateway   kill the gateway; it stays down for 1 minute
+#   stop-leader    stop the Patroni leader's VM for 2 minutes: an automatic failover to the
+#                  other cloud; run it again to fail back
+#   stop-wit       stop the etcd witness for 2 minutes
+#   watch          no fault: load, probe and checker while someone else changes the cloud
+#                  (make infra REPLACE=pg-z); set LOAD and HOLD to cover it
 #
 # The chaos harness runs on ops-a with the scenario's name and no faults of its own: load
-# through the public name, then quiesce, then the checker. 90 s into the load this script
-# applies the scenario, and reverts it after the hold. Faults applied on a VM revert
-# themselves (systemd-run timers), so a crashed script can't leave one behind. Meanwhile a
-# probe outside both clouds records what the public entry still serves. Results: the checker's
-# report in docs/results/, the probe's timeline beside it.
+# through the public name (LOAD, default 6m), then quiesce, then the checker. 90 s into the
+# load this script applies the scenario, and reverts it after HOLD seconds (default 120).
+# Faults applied on a VM revert themselves (systemd-run timers), so a crashed script can't
+# leave one behind. Meanwhile the release probe, outside both clouds, sends ~10 requests a
+# second through the public name and never retries. Results: the checker's report in
+# $RESULTS (default docs/results/), and the probe's failures, timed from the fault, beside it
+# in $LABEL-probe.md (LABEL defaults to act1-<scenario>).
 #
 # HARNESS_SHA picks the harness code (default: HEAD; it must be on GitHub).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-scenario=${1:?usage: act1.sh cut-clouds|stop-azure|stop-aws|kill-gateway}
+scenario=${1:?usage: act1.sh cut-clouds|stop-azure|stop-aws|kill-gateway|stop-leader|stop-wit|watch}
 . deploy/release/vmrun.sh
 sha=${HARNESS_SHA:-$(git rev-parse HEAD)}
-hold=120
+hold=${HOLD:-120}
+label=${LABEL:-act1-$scenario}
 aws_vms=$(jq -r --arg ops "$ops" '.vms[] | select(.cloud == "aws" and .name != $ops) | .name' <<<"$topo")
 azure_vms=$(jq -r '.vms[] | select(.cloud == "azure") | .name' <<<"$topo")
 gateways=$(jq -r '.vms[] | select(.roles | index("gateway")) | .name' <<<"$topo")
 azure_ids() { az vm list -g "$(vm svc-z rg)" --query '[].id' -o tsv; }
-results=docs/results
+results=${RESULTS:-docs/results}
+mkdir -p "$results"
 probe_log=$(mktemp)
 log() { echo "$(date -u +%T) $*"; }
 
@@ -44,11 +54,12 @@ docker run -d --name torture --network host -w /src -v $d:/src:ro -v tq-gomod:/g
   -v /etc/tq/certs:/certs:ro -v /opt/tq-harness/results:/out golang:1.27 \
   go run ./cmd/torture -gateway https://@FQDN@ -ca "" -password "$HARNESS_PASSWORD" \
     -jobs-db "$JOBS_DB_URL" -sinks-db "$SINKS_DB_URL" -mailpit http://localhost:8025 -webhook https://@OPS@:8090/webhook \
-    -faults=false -scenario @SCENARIO@ -duration 6m -quiesce 10m -out /out'
+    -faults=false -scenario @SCENARIO@ -duration @LOAD@ -quiesce 10m -out /out'
 harness=${harness//@SHA@/$sha}
 harness=${harness//@FQDN@/$fqdn}
 harness=${harness//@OPS@/$ops}
 harness=${harness//@SCENARIO@/$scenario}
+harness=${harness//@LOAD@/${LOAD:-6m}}
 
 # ---------- scenarios ----------
 on_all() { # on_all <vms> <command>: in parallel; fails if any fails
@@ -58,6 +69,23 @@ on_all() { # on_all <vms> <command>: in parallel; fails if any fails
     pids+=($!)
   done
   for p in "${pids[@]}"; do wait "$p"; done
+}
+
+# A stopped VM, the way a crash takes it: no drain, no handover, no clean shutdown.
+stop_vm() {
+  if [ "$(vm "$1" cloud)" = aws ]; then
+    aws ec2 stop-instances --force --region "$(vm "$1" region)" --instance-ids "$(vm "$1" id)" --output text >/dev/null
+    aws ec2 wait instance-stopped --region "$(vm "$1" region)" --instance-ids "$(vm "$1" id)"
+  else
+    az vm stop --skip-shutdown -g "$(vm "$1" rg)" -n "$(vm "$1" id)" -o none
+  fi
+}
+start_vm() {
+  if [ "$(vm "$1" cloud)" = aws ]; then
+    aws ec2 start-instances --region "$(vm "$1" region)" --instance-ids "$(vm "$1" id)" --output text >/dev/null
+  else
+    az vm start -g "$(vm "$1" rg)" -n "$(vm "$1" id)" -o none
+  fi
 }
 
 apply() {
@@ -90,6 +118,16 @@ systemd-run --on-active=@HOLD@s --unit tq-fault-revert sh /run/tq-cut -D'
       systemctl reset-failed tq-fault-revert 2>/dev/null || true
       systemd-run --on-active=60s --unit tq-fault-revert sh -c 'docker update --restart=unless-stopped tq-gateway-gateway-1 && docker start tq-gateway-gateway-1'"
     ;;
+  stop-leader)
+    victim=$(pg_leader)
+    log "the Patroni leader is $victim"
+    stop_vm "$victim"
+    ;;
+  stop-wit)
+    victim=wit
+    stop_vm wit
+    ;;
+  watch) ;;
   *) echo "unknown scenario $scenario" >&2; exit 2 ;;
   esac
 }
@@ -97,36 +135,14 @@ systemd-run --on-active=@HOLD@s --unit tq-fault-revert sh /run/tq-cut -D'
 revert() { # VM-side faults revert themselves; stopped VMs are started here
   case $scenario in
   stop-azure) az vm start --ids $(azure_ids) -o none ;;
+  stop-leader | stop-wit) start_vm "$victim" ;;
   stop-aws) aws ec2 start-instances --region "$region" --instance-ids $(for v in $aws_vms; do vm "$v" id; done) --output text >/dev/null ;;
   esac
 }
 
-# ---------- the probe: what an outside client sees, every 2 s ----------
-probe() {
-  set +eu # it must outlive any failed request
-  local pw token= t v l s n=0 c=(curl -s --max-time 5)
-  curl -V | grep -q Schannel && c+=(--ssl-no-revoke) # Windows' TLS can't reach revocation lists here
-  pw=$(aws ssm get-parameter --region "$region" --name /tq/ci/smoke-password --with-decryption --query Parameter.Value --output text)
-  # The body, then the status on its own line (no temp file: on Windows, curl and bash disagree on /tmp).
-  login() { "${c[@]}" -w '\n%{http_code}' "https://$fqdn/v1/auth/login" -d "{\"email\":\"smoke@example.com\",\"password\":\"$pw\"}"; }
-  while :; do
-    t=$(date -u +%s)
-    v=$("${c[@]}" -o /dev/null -w '%{http_code}' "https://$fqdn/version")
-    l=-
-    if [ $((n % 5)) = 0 ] || [ -z "$token" ]; then # the login limiter allows one every 2 s
-      l=$(login)
-      [ "$(tail -1 <<<"$l")" = 200 ] && token=$(head -1 <<<"$l" | jq -r .token)
-      l=$(tail -1 <<<"$l")
-    fi
-    s=$("${c[@]}" -o /dev/null -w '%{http_code}' "https://$fqdn/v1/jobs" -H "Authorization: Bearer $token" \
-      -H "Idempotency-Key: probe-$scenario-$t-$n" -d '{"queue":"default","type":"chaos.sleep","payload":{"ms":10}}')
-    echo "$t $v $l $s" >>"$probe_log"
-    n=$((n + 1))
-    sleep 2
-  done
-}
-
 # ---------- run ----------
+probe_bin="./tq-probe$(go env GOEXE)" # relative: Windows Go and bash disagree on /tmp
+go build -o "$probe_bin" ./deploy/release/probe
 log "harness $(git rev-parse --short "$sha") on $ops, scenario $scenario"
 run "$ops" "tq-converge" >/dev/null # fresh files: Terraform may have changed ops-a's settings
 run "$ops" "$harness" >/dev/null
@@ -140,9 +156,9 @@ until run "$ops" "docker logs torture 2>&1 | grep -q 'load running'" >/dev/null 
 done
 load_start=$(date -u +%s)
 log "load started; probing"
-probe &
+PROBE_PASSWORD=$(aws ssm get-parameter --region "$region" --name /tq/ci/smoke-password --with-decryption --query Parameter.Value --output text)   "$probe_bin" -url "https://$fqdn" >"$probe_log" 2>&1 &
 probe_pid=$!
-trap 'kill $probe_pid 2>/dev/null || true' EXIT
+trap 'kill $probe_pid 2>/dev/null || true; rm -f "$probe_bin"' EXIT
 
 sleep 90
 fault_start=$(date -u +%s)
@@ -159,28 +175,28 @@ until [ "$(run "$ops" "docker inspect -f '{{.State.Status}}' torture" 2>/dev/nul
   [ "$(date +%s)" -lt $deadline ] || { echo "the harness is still running after 40 minutes" >&2; exit 1; }
   sleep 20
 done
-kill $probe_pid 2>/dev/null || true
+kill -TERM $probe_pid # it prints its summary on SIGTERM (on Linux; experiment.yml runs there)
+wait $probe_pid || true
 code=$(run "$ops" "docker inspect -f '{{.State.ExitCode}}' torture" | head -1 | tr -d '[:space:]')
 report=$(run "$ops" "ls -t /opt/tq-harness/results/*-$scenario.md | head -1" | head -1 | tr -d '[:space:]')
 run "$ops" "base64 -w0 $report" | tr -d '[:space:]' | base64 -d >"$results/$(basename "$report")" # bytes intact
 log "checker exit $code; report $results/$(basename "$report")"
 
-# The probe's timeline: share of 2xx answers before, during and after the fault window.
+# The probe's verdict, and each failed request timed from the fault.
 {
-  echo "# Probe: $scenario"
+  echo "# Probe: $label"
   echo
-  echo "An outside client, every 2 s, through https://$fqdn: \`/version\` (the gateway), login every 10 s (auth), and a submit (jobs and the database). Fault applied at +$((fault_start - load_start))s and reverted at +$((fault_end - load_start))s from the start of load."
+  echo "The release probe, outside both clouds, through https://$fqdn: about 10 requests a second (\`/version\`, an authenticated list, an idempotent submit), each on a new connection and never retried. Fault applied at +$((fault_start - load_start))s and held for $((fault_end - fault_start))s, from the start of load."
   echo
-  echo "| Window | /version | login | submit |"
-  echo "| --- | --- | --- | --- |"
-  awk -v a="$fault_start" -v b="$fault_end" '
-    function w(t) { return t < a ? "before" : (t < b ? "during" : "after") }
-    { k = w($1); for (i = 2; i <= 4; i++) if ($i != "-") { n[k, i]++; if ($i ~ /^2/) ok[k, i]++ } }
-    END { split("before during after", ws, " ")
-      for (j = 1; j <= 3; j++) { k = ws[j]; printf "| %s |", k
-        for (i = 2; i <= 4; i++) printf " %d/%d |", ok[k, i], n[k, i]; print "" } }' "$probe_log"
+  echo "**$(grep -E '^probe: [0-9]+ requests' "$probe_log" || echo 'probe: no summary')**"
   echo
-  echo "First and last failed submit, relative to the fault: $(awk -v a="$fault_start" '$4 !~ /^2/ { if (!f) f = $1; l = $1 } END { if (f) printf "+%ds … +%ds", f - a, l - a; else printf "none" }' "$probe_log")."
-} >"$results/act1-$scenario-probe.md"
-log "probe summary $results/act1-$scenario-probe.md"
+  if grep -q '^probe: FAILED' "$probe_log"; then
+    echo "| Request | From the fault | Error |"
+    echo "| --- | --- | --- |"
+    awk -v a="$((fault_start % 86400))" '$2 == "FAILED" {
+      split($6, t, ":"); e = $0; sub(/^[^:]*:[^:]*:[^:]*:[^:]*: /, "", e)
+      printf "| %s %s | %+.1fs | %s |\n", $3, $4, t[1] * 3600 + t[2] * 60 + t[3] - a, e }' "$probe_log"
+  fi
+} >"$results/$label-probe.md"
+log "probe summary $results/$label-probe.md"
 exit "$code"

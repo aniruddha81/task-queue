@@ -1,22 +1,37 @@
-# Experiments against the running cloud that need a stable vantage point outside both clouds:
-# a GitHub-hosted runner stops a VM while the external probe runs beside it. Started by hand:
-#   gh workflow run experiment.yml --ref release -f vm=svc-a
+# Experiments against the running cloud that need a stable vantage point outside both clouds.
+# Started by hand, on release (only it may use the cloud environment):
+#   gh workflow run experiment.yml --ref release -f vm=svc-a               stop a VM under the probe
+#   gh workflow run experiment.yml --ref release -f scenario=stop-leader   act1.sh: a fault under
+#                                                  the chaos harness, its checker and the probe
+# Results (the checker's report and the probe's summary) are uploaded as the run's artifact.
 name: experiment
 on:
   workflow_dispatch:
     inputs:
       vm:
-        description: "The VM to stop for 2 minutes (e.g. svc-a, svc-z)"
-        required: true
+        description: "stop-vm.sh: the VM to stop for 2 minutes (e.g. svc-a, svc-z)"
+        required: false
+      scenario:
+        description: "act1.sh: cut-clouds, stop-leader, stop-wit, watch, ..."
+        required: false
+      label:
+        description: "act1.sh: results name (default act1-<scenario>)"
+        required: false
+      load:
+        description: "act1.sh: how long the harness loads (default 6m)"
+        required: false
+      hold:
+        description: "act1.sh: seconds the fault is held (default 120)"
+        required: false
 
 concurrency: { group: deploy-cloud, cancel-in-progress: false } # never during a rollout
 permissions: { contents: read, id-token: write }
 
 jobs:
-  stop-vm:
+  experiment:
     runs-on: ubuntu-latest
     environment: cloud
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -31,12 +46,39 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: stop ${{ inputs.vm }} under the probe
+      - if: inputs.vm
+        name: stop ${{ inputs.vm }} under the probe
+        env:
+          VM: ${{ inputs.vm }}
         run: |
           set -o pipefail # without it, `x | tee log` succeeds whatever x does
-          bash deploy/experiments/stop-vm.sh "${{ inputs.vm }}" 2>&1 | tee experiment.log || {
+          bash deploy/experiments/stop-vm.sh "$VM" 2>&1 | tee experiment.log || {
             sed -n 's/^probe: FAILED/::error::&/p' experiment.log
             echo "::error::$(grep -E '^probe: [0-9]+ requests' experiment.log)"
             exit 1
           }
           echo "::notice::$(grep -E '^probe: [0-9]+ requests' experiment.log)"
+      - if: inputs.scenario
+        name: ${{ inputs.scenario }} under the harness and the probe
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+          RESULTS: out
+          LABEL: ${{ inputs.label }}
+          LOAD: ${{ inputs.load }}
+          HOLD: ${{ inputs.hold }}
+        run: |
+          set -o pipefail
+          mkdir -p out
+          [ -n "$LABEL" ] || unset LABEL
+          [ -n "$LOAD" ] || unset LOAD
+          [ -n "$HOLD" ] || unset HOLD
+          rc=0
+          bash deploy/experiments/act1.sh "$SCENARIO" 2>&1 | tee out/experiment.log || rc=$?
+          grep -h '^\*\*probe:' out/*-probe.md | sed 's/\*//g; s/^/::notice::/' || true
+          grep -hE '^\| .*FAIL' out/chaos-*.md | sed 's/^/::error::/' || true
+          exit $rc
+      - if: always() && inputs.scenario
+        uses: actions/upload-artifact@v7
+        with:
+          name: results
+          path: out/

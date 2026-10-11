@@ -24,6 +24,10 @@ bootstrap:
     postgresql:
       use_pg_rewind: true # a failed old primary rejoins as a replica without a full copy
       parameters:
+        # A synchronous standby cut off by the network sends no error: commits wait for it
+        # until this timeout drops it, and Patroni then turns synchronous replication off.
+        # The default (60 s) would stall writes past every client's timeout.
+        wal_sender_timeout: 5s
         idle_in_transaction_session_timeout: 10s
         tcp_keepalives_idle: 10
         tcp_keepalives_interval: 5
