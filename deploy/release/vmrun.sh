@@ -79,11 +79,29 @@ any() { # any <role> <command>: run it on the first VM with the role that answer
 }
 pg_cluster() { any postgres "curl -fsS --max-time 5 http://localhost:8008/cluster"; }
 pg_leader() { pg_cluster | jq -r '.members[] | select(.role == "leader") | .name'; }
-pg_healthy() { # one running leader, and every other database VM streaming from it
+pg_healthy() { # one running leader, every other database VM streaming, one of them synchronously
   local c n
   n=$(jq '[.vms[] | select(.roles | index("postgres"))] | length - 1' <<<"$topo")
   c=$(pg_cluster) && jq -e --argjson n "$n" '([.members[] | select(.role == "leader" and .state == "running")] | length == 1)
-    and ([.members[] | select(.state == "streaming")] | length == $n)' <<<"$c" >/dev/null
+    and ([.members[] | select(.state == "streaming")] | length == $n)
+    and ($n == 0 or ([.members[] | select(.role == "sync_standby")] | length >= 1))' <<<"$c" >/dev/null
+}
+# sync_mode true|false: Patroni's synchronous replication, cluster-wide. Before a replica goes
+# away on purpose, the leader stops waiting for its acknowledgements; otherwise commits stall
+# until wal_sender_timeout drops it. Off, a failover could lose the last commits, but with the
+# only replica gone there is nothing to fail over to.
+sync_mode() {
+  any postgres "curl -fsS --max-time 10 -X PATCH http://localhost:8008/config -d '{\"synchronous_mode\": $1}'" >/dev/null || return 1
+  for _ in $(seq 24); do # Patroni applies it within a loop (5 s)
+    if [ "$1" = false ]; then
+      [ -z "$(pg_cluster | jq -r '.members[] | select(.role == "sync_standby") | .name')" ] && return 0
+    else
+      pg_healthy && return 0
+    fi
+    sleep 5
+  done
+  echo "synchronous_mode $1 did not take effect in 2 minutes"
+  return 1
 }
 etcd_healthy() { # every member of the role map is in the cluster and healthy
   local n
@@ -123,6 +141,9 @@ cycle() {
   if has "$name" postgres && [ "$(pg_leader)" = "$name" ]; then
     switchover "$name" || return 1
   fi
+  if has "$name" postgres; then
+    sync_mode false || return 1
+  fi
   "$@" || return 1
   load_topo
   echo "waiting for $name to converge"
@@ -131,6 +152,14 @@ cycle() {
     [ "$i" = 60 ] && { echo "::error::$name did not converge in 15 minutes"; return 1; }
     sleep 15
   done
+  if has "$name" postgres; then # streaming again: synchronous again (pg_healthy waits for it)
+    for i in $(seq 40); do
+      [ "$(pg_cluster | jq --arg n "$name" '[.members[] | select(.name == $n and .state == "streaming")] | length')" = 1 ] && break
+      [ "$i" = 40 ] && { echo "::error::$name is not streaming 10 minutes after it converged"; return 1; }
+      sleep 15
+    done
+    sync_mode true || return 1
+  fi
   if has "$name" postgres || has "$name" etcd; then
     for i in $(seq 40); do
       pg_healthy && etcd_healthy && break
