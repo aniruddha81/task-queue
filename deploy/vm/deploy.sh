@@ -32,10 +32,18 @@ ready() {
 }
 
 # etcd membership, through the other members (a learner can't answer for the cluster).
+peers() { tr , '\n' <<<"$ETCD_INITIAL_CLUSTER" | grep -v "^$VM_NAME=" | sed 's/^[^=]*=//; s/2380$/2379/'; }
 etcdctl() {
-  local peers
-  peers=$(tr , '\n' <<<"$ETCD_INITIAL_CLUSTER" | grep -v "^$VM_NAME=" | sed 's/^[^=]*=//; s/2380$/2379/' | paste -sd, -)
-  docker run --rm --network host "$(compose etcd config --images)" etcdctl --endpoints="$peers" --dial-timeout=3s --command-timeout=10s "$@"
+  docker run --rm --network host "$(compose etcd config --images)" etcdctl --endpoints="$(peers | paste -sd, -)" \
+    --dial-timeout=3s --command-timeout=10s "$@"
+}
+# each <etcdctl args>: a membership change, asked of each member in turn until one accepts. A
+# member refuses one ("unhealthy cluster") while it believes it isn't connected to every peer,
+# and etcd can keep believing that long after the peer came back; another member may know better.
+each() {
+  local ep
+  for ep in $(peers); do etcdctl --endpoints="$ep" "$@" && return 0; done
+  return 1
 }
 me() { # this VM's member ID, from `member list` (ID, status, name, peer URL, client URL, learner);
   # by peer URL, since a member that hasn't started has no name yet. Members first created
@@ -50,9 +58,9 @@ etcd_join() {
   local list old out id
   list=$(etcdctl member list) || { echo "etcd: no running cluster reachable to join yet" >&2; return 1; }
   old=$(me "" <<<"$list") # a replaced VM keeps its name: its dead incarnation goes first
-  for id in $old; do etcdctl member remove "$id"; done
+  for id in $old; do each member remove "$id"; done
   docker volume rm -f tq-etcd_etcd >/dev/null # a removed member's data can't rejoin
-  out=$(etcdctl member add "$VM_NAME" --learner --peer-urls="http://$MESH_IP:2380")
+  out=$(each member add "$VM_NAME" --learner --peer-urls="http://$MESH_IP:2380")
   ETCD_CLUSTER=$(sed -n 's/^ETCD_INITIAL_CLUSTER="\(.*\)"$/\1/p' <<<"$out") ETCD_STATE=existing compose etcd up -d
 }
 # A learner becomes a voter once it has caught up with the leader; until then promote fails.
@@ -61,7 +69,7 @@ etcd_promote() {
   id=$(etcdctl member list 2>/dev/null | me true) || return 0 # can't tell: a later converge will
   [ -n "$id" ] || return 0
   for _ in $(seq 60); do
-    etcdctl member promote "$id" 2>/dev/null && return 0
+    each member promote "$id" 2>/dev/null && return 0
     sleep 2
   done
   echo "etcd: $VM_NAME is still a learner" >&2

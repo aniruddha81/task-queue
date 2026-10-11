@@ -2,6 +2,16 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-11 · A replaced database VM couldn't rejoin etcd for 48 minutes
+
+**Found by:** the go-live gate's first database VM replacement (`make infra REPLACE=pg-z`, under load). The new `pg-z` removed its dead predecessor from etcd, then every `member add` was refused: `etcdserver: unhealthy cluster`. `pg-a` kept serving alone, without a synchronous standby, the whole time.
+
+**Cause:** the leader, `pg-a`, logged "rejecting member add request; local member has not been connected to all peers". Its only other peer, `wit`, had been stopped in the witness-loss experiment 20 minutes earlier; one failed send then marked it inactive, and nothing ever marked it active again. etcd marks a peer active on a new stream connection or a successful pipeline send, and with the streams reconnected right away and healthy, neither happened. Raft itself worked; only the strict reconfiguration check believed the peer was gone. With two members, restarting either etcd to clear it would have cost quorum and could have demoted the Postgres primary.
+
+**Fix:** that day, dropping `wit`'s TCP connections to `pg-a` (`ss -K`) made `wit` reconnect, `pg-a` marked it active, and `pg-z` joined within 20 s. For good, `deploy.sh` asks each member in turn for a membership change (add, remove, promote), since the check runs on the member that receives the request and another member may see the cluster as it is.
+
+**Lesson:** an experiment's fault can outlive the experiment. The witness-loss run passed with zero failed requests, and left behind a state that only the next, different operation could expose.
+
 ## 2026-10-11 · The week-12 deadline fix missed the chore's own queries
 
 **Found by:** CI for release `4fcc718`: `TestLeadsAgainAfterSilentlyDeadConnections` failed ("leading again after the network healed: not within 20s"), in a package the release didn't touch. Locally, under `-race`, it failed 2 runs out of 6, and the failures were bimodal: a run led again after about 16 s or never.
