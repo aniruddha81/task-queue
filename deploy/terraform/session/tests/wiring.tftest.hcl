@@ -119,8 +119,8 @@ run "act2" { # the default role map: week 13
     error_message = "the witness lives in Hyderabad"
   }
   assert {
-    condition     = strcontains(aws_ssm_parameter.file["pg-a/tq.env"].value, "ETCD_INITIAL_CLUSTER='pg-a=http://pg-a:2380,pg-z=http://pg-z:2380,wit=http://wit:2380'")
-    error_message = "three etcd members, one per site"
+    condition     = strcontains(aws_ssm_parameter.file["pg-a/tq.env"].value, "ETCD_INITIAL_CLUSTER='pg-a=http://10.99.0.13:2380,pg-z=http://10.99.0.23:2380,wit=http://10.99.0.31:2380'")
+    error_message = "three etcd members, one per site, by mesh IP (a container's /etc/hosts is a copy from when it started)"
   }
   assert {
     condition     = strcontains(aws_ssm_parameter.file["wit/tq.env"].value, "ETCD_BOOTSTRAP='false'") && strcontains(jsondecode(azurerm_key_vault_secret.vm["pg-z"].value)["tq.env"], "ETCD_BOOTSTRAP='false'")

@@ -175,11 +175,11 @@ locals {
       WEBHOOK_ALLOW = "https://${local.ops_vm}:8090/webhook"
     } : {},
     contains(v.roles, "etcd") ? {
-      ETCD_INITIAL_CLUSTER = join(",", [for m in local.etcd_vms : "${m}=http://${m}:2380"])
+      ETCD_INITIAL_CLUSTER = join(",", [for m in local.etcd_vms : "${m}=http://${local.vms[m].mesh_ip}:2380"])
       ETCD_BOOTSTRAP       = tostring(var.etcd_bootstrap)
     } : {},
     contains(v.roles, "postgres") ? {
-      ETCD_HOSTS                   = join(",", [for m in local.etcd_vms : "${m}:2379"])
+      ETCD_HOSTS                   = join(",", [for m in local.etcd_vms : "${local.vms[m].mesh_ip}:2379"])
       PATRONI_SUPERUSER_PASSWORD   = random_password.pw["superuser"].result
       PATRONI_REPLICATION_PASSWORD = random_password.pw["replication"].result
       JOBS_DB_PASSWORD             = random_password.pw["jobs_db"].result

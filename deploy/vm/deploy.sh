@@ -37,20 +37,22 @@ etcdctl() {
   peers=$(tr , '\n' <<<"$ETCD_INITIAL_CLUSTER" | grep -v "^$VM_NAME=" | sed 's/^[^=]*=//; s/2380$/2379/' | paste -sd, -)
   docker run --rm --network host "$(compose etcd config --images)" etcdctl --endpoints="$peers" --dial-timeout=3s --command-timeout=10s "$@"
 }
-me() { # this VM's member ID, from `member list` (ID, status, name, peer URL, client URL, learner)
-  awk -F', ' -v u="http://$VM_NAME:2380" -v l="$1" '$4 == u && (l == "" || $6 == l) {print $1}'
+me() { # this VM's member ID, from `member list` (ID, status, name, peer URL, client URL, learner);
+  # by peer URL, since a member that hasn't started has no name yet. Members first created
+  # before week 13 advertise the VM's name rather than its mesh IP.
+  awk -F', ' -v n="http://$VM_NAME:2380" -v u="http://$MESH_IP:2380" -v l="$1" '($4 == u || $4 == n) && (l == "" || $6 == l) {print $1}'
 }
 # A new or replaced member joins the running cluster as a learner: it doesn't count toward
 # quorum, so adding it can't stall the cluster. It never founds a cluster because it can't
 # reach one: in a running session that would be a second cluster, and Patroni would
 # bootstrap a second primary on it. Only a fresh session (ETCD_BOOTSTRAP) founds one.
 etcd_join() {
-  local list old out
+  local list old out id
   list=$(etcdctl member list) || { echo "etcd: no running cluster reachable to join yet" >&2; return 1; }
   old=$(me "" <<<"$list") # a replaced VM keeps its name: its dead incarnation goes first
-  [ -z "$old" ] || etcdctl member remove "$old"
+  for id in $old; do etcdctl member remove "$id"; done
   docker volume rm -f tq-etcd_etcd >/dev/null # a removed member's data can't rejoin
-  out=$(etcdctl member add "$VM_NAME" --learner --peer-urls="http://$VM_NAME:2380")
+  out=$(etcdctl member add "$VM_NAME" --learner --peer-urls="http://$MESH_IP:2380")
   ETCD_CLUSTER=$(sed -n 's/^ETCD_INITIAL_CLUSTER="\(.*\)"$/\1/p' <<<"$out") ETCD_STATE=existing compose etcd up -d
 }
 # A learner becomes a voter once it has caught up with the leader; until then promote fails.
