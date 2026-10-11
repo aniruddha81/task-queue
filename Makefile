@@ -1,6 +1,8 @@
 # Cloud lifecycle (Linux, macOS or WSL, signed in to the aws, az and gh CLIs; jq and curl):
 #   make bootstrap   once: the state bucket, the persistent stack, CI's GitHub variables
 #   make up          start a cloud phase: VMs, mesh and firewalls (the session stack)
+#   make infra       apply a change to a running session with no downtime (REPLACE="pg-a"
+#                    also replaces VMs): deploy/release/infra.sh
 #   make down        end it: destroy the session stack, then sweep
 #   make stop/start  nightly before go-live: stop AWS instances, deallocate Azure VMs
 #   make sweep       fail if anything billable is left outside the persistent stack
@@ -17,7 +19,7 @@ TF = ARM_SUBSCRIPTION_ID=$$(az account show --query id -o tsv) terraform -chdir=
 P = $(TF)/persistent
 S = $(TF)/session
 
-.PHONY: bootstrap up down stop start sweep torture
+.PHONY: bootstrap up infra down stop start sweep torture
 
 bootstrap:
 	aws s3api head-bucket --bucket $(STATE) 2>/dev/null || \
@@ -36,13 +38,26 @@ up:
 	$(S) init -input=false -backend-config=bucket=$(STATE)
 	n=$$($(S) state list | wc -l); 	$(S) apply -var admin_cidr=$$(curl -fsS https://checkip.amazonaws.com)/32 $$([ "$$n" = 0 ] && echo -var etcd_bootstrap=true)
 
+infra:
+	$(S) init -input=false -backend-config=bucket=$(STATE)
+	bash deploy/release/infra.sh $(REPLACE)
+
 down:
 	$(S) init -input=false -backend-config=bucket=$(STATE)
 	$(S) destroy -var admin_cidr=$$(curl -fsS https://checkip.amazonaws.com)/32
 	bash deploy/terraform/vms.sh sweep
 
-stop start sweep:
-	bash deploy/terraform/vms.sh $@
+# A stopped VM isn't a fault: maintenance.yml's sweep is off while the VMs are.
+stop:
+	gh workflow disable maintenance.yml
+	bash deploy/terraform/vms.sh stop
+
+start:
+	bash deploy/terraform/vms.sh start
+	gh workflow enable maintenance.yml
+
+sweep:
+	bash deploy/terraform/vms.sh sweep
 
 torture:
 	go run ./cmd/torture

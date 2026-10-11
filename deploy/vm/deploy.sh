@@ -92,9 +92,11 @@ for role in $ROLES; do
     etcd_promote
     ;;
   postgres)
-    # Never restarted by a deploy, only started: a new database image is applied by a
-    # Patroni rolling restart (replica, switchover, old primary), not here. A new node with
-    # no data clones the primary.
+    # Never restarted by a deploy, only started. A node picks up a new database image when
+    # it is replaced: make infra REPLACE=<replica>, then the other (it hands over first).
+    # A new node with no data clones the primary.
+    # ponytail: replacing re-clones the database; a Patroni rolling restart in place is
+    # quicker once the database is too big to copy in minutes.
     compose postgres up -d --no-recreate
     for _ in $(seq 150); do compose postgres exec -T patroni pg_isready -qh localhost && break || sleep 2; done
     compose postgres exec -T patroni pg_isready -h localhost

@@ -1,6 +1,8 @@
 # git push origin main:release  ->  tested, built and deployed in place, with rollback.
 # Stages (deployment_plan.md): verify, build, deploy (with the external no-retry probe,
-# run by rollout.sh from this runner). The infrastructure stage joins in week 13.
+# run by rollout.sh from this runner). Infrastructure changes don't ride on a release: they
+# go through make infra (deploy/release/infra.sh) from the admin machine, so this workflow's
+# cloud role can run commands on VMs but never create, replace or delete them.
 name: release
 on:
   push:

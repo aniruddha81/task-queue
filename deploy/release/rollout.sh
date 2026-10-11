@@ -16,23 +16,11 @@ record() { # in both clouds: each VM reads `current` from its own cloud at boot
   az keyvault secret set --vault-name "$vault" --name "release-$1" --value "$2" -o none
 }
 
-tm_rg=$(cut -d/ -f5 <<<"$(jq -r .tm <<<"$topo")")
-tm_profile=$(jq -r '.tm | split("/") | last' <<<"$topo")
-endpoint() { # endpoint <vm> Enabled|Disabled
-  az network traffic-manager endpoint update -g "$tm_rg" --profile-name "$tm_profile" --type externalEndpoints -n "$1" --endpoint-status "$2" -o none
-}
-online() { # online <query>: names of endpoints that are enabled and pass Traffic Manager's health probe
-  az network traffic-manager endpoint list -g "$tm_rg" --profile-name "$tm_profile" --query "[?endpointStatus=='Enabled' && endpointMonitorStatus=='Online'$1].name" -o tsv
-}
-
 # converge <vm> <sha>: a gateway is drained first, when a twin can serve meanwhile.
 converge() {
   local name=$1 s=$2 drained=
-  if jq -e --arg n "$name" '.vms[] | select(.name == $n) | .roles | index("gateway")' <<<"$topo" >/dev/null; then
-    if [ -n "$(online " && name!='$name'")" ]; then
-      endpoint "$name" Disabled
-      echo "drained $name; waiting 60 s (six DNS TTLs) for clients to move to its twin"
-      sleep 60
+  if has "$name" gateway; then
+    if drain "$name"; then
       drained=1
     else
       echo "::warning::no other gateway is online; $name is deployed in place, which drops requests"
@@ -40,15 +28,7 @@ converge() {
     fi
   fi
   run "$name" "tq-converge $s" || return 1
-  if [ -n "$drained" ]; then
-    endpoint "$name" Enabled
-    for _ in $(seq 30); do # Traffic Manager probes every 10 s
-      [ -n "$(online " && name=='$name'")" ] && { echo "$name is back in DNS"; return 0; }
-      sleep 10
-    done
-    echo "$name did not come back online in Traffic Manager"
-    return 1
-  fi
+  [ -z "$drained" ] || undrain "$name"
 }
 
 deploy() { # deploy <sha>: data VMs, then migrations, then everything else, in topology order
@@ -87,15 +67,12 @@ smoke() { # one job per cloud must succeed through the public name, on the new v
 
 # 1. Preflight: every VM answers, and Patroni has a leader with every other database VM
 # streaming from it. If not, change nothing; retry a few times, then fail.
-pg=$(jq -r '[.vms[] | select(.roles | index("postgres")) | .name][0]' <<<"$topo")
-replicas=$(jq '[.vms[] | select(.roles | index("postgres"))] | length - 1' <<<"$topo")
-healthy="curl -fsS http://localhost:8008/cluster | jq -e '([.members[] | select(.role == \"leader\" and .state == \"running\")] | length == 1) and ([.members[] | select(.state == \"streaming\")] | length == $replicas)'"
 for attempt in 1 2 3 4; do
   down=
   for name in $(jq -r '.vms[].name' <<<"$topo"); do
     run "$name" "docker info >/dev/null" >/dev/null 2>&1 || down="$down $name"
   done
-  [ -n "$down" ] || run "$pg" "$healthy" >/dev/null 2>&1 || down=" Patroni (no leader, or a replica not streaming)"
+  [ -n "$down" ] || pg_healthy || down=" Patroni (no leader, or a replica not streaming)"
   [ -z "$down" ] && break
   [ $attempt = 4 ] && { echo "preflight: no answer from$down; nothing changed"; exit 1; }
   echo "preflight: no answer from$down; retrying in 2 minutes"

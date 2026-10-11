@@ -1,0 +1,64 @@
+# Automatic maintenance (deployment_plan.md): a health sweep every 15 minutes, and weekly
+# rolling reboots for OS updates (deploy/release/maintain.sh). Schedules run on main, but only
+# release may use the cloud environment and its credentials, so the scheduled job only
+# dispatches this workflow on release, and the maintenance runs that release's code.
+# make stop disables this workflow (a stopped VM isn't a fault) and make start enables it.
+name: maintenance
+on:
+  schedule:
+    - cron: "*/15 * * * *" # sweep
+    - cron: "30 21 * * 6" # reboots: Sunday 03:00 IST
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "sweep or reboot"
+        required: true
+        default: sweep
+
+permissions: { contents: read }
+
+jobs:
+  # A rollout or an experiment drains gateways and stops VMs on purpose, so nothing is
+  # dispatched while one runs. Neither job joins their concurrency group from here: a
+  # pending run in a group cancels the one pending before it, which could be a release.
+  dispatch:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions: { actions: write }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TASK: ${{ github.event.schedule == '30 21 * * 6' && 'reboot' || 'sweep' }}
+    steps:
+      - run: |
+          others=".[] | select(.databaseId != $GITHUB_RUN_ID) | .workflowName" # not this run
+          busy=$(for s in queued in_progress; do
+            gh run list -R "$GITHUB_REPOSITORY" -s $s --json databaseId,workflowName -q "$others"
+          done | grep -xE 'release|experiment|maintenance' || true)
+          if [ -n "$busy" ]; then
+            echo "::notice::skipped $TASK: $(paste -sd' ' <<<"$busy") running"
+          else
+            gh workflow run maintenance.yml -R "$GITHUB_REPOSITORY" --ref release -f task="$TASK"
+          fi
+
+  maintain:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: cloud
+    timeout-minutes: 120
+    # Reboots wait for a rollout, and a rollout waits for them; a sweep only reads.
+    concurrency: ${{ inputs.task == 'reboot' && 'deploy-cloud' || format('sweep-{0}', github.run_id) }}
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ap-south-1
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: bash deploy/release/maintain.sh "$TASK"
+        env:
+          TASK: ${{ inputs.task }}
