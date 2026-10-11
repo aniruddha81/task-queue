@@ -39,7 +39,8 @@ run() {
     out=$(az vm run-command invoke -g "$(vm "$name" rg)" -n "$id" --command-id RunShellScript \
       --scripts "( $cmd ) && echo TQ-RUN-OK" --query 'value[0].message' -o tsv)
     # Its message is "Enable succeeded:", then [stdout] and [stderr] sections.
-    sed -n '/^\[stdout\]$/,/^\[stderr\]$/{//!p}' <<<"$out" | grep -v '^TQ-RUN-OK$' || true
+    # The marker ends the last line when the command's output has no final newline.
+    sed -n '/^\[stdout\]$/,/^\[stderr\]$/{//!p}' <<<"$out" | sed '/^TQ-RUN-OK$/d; s/TQ-RUN-OK$//'
     sed -n '/^\[stderr\]$/,${//!p}' <<<"$out" >&2
     grep -q TQ-RUN-OK <<<"$out"
   fi

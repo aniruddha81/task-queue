@@ -5,7 +5,8 @@
 #
 #   cut-clouds     drop all mesh traffic between Azure and AWS for 2 minutes
 #   stop-azure     stop every Azure VM for 2 minutes
-#   stop-aws       stop every AWS VM except ops-a (never faulted) for 2 minutes
+#   stop-aws       stop every AWS VM in Mumbai except ops-a (never faulted) for 2 minutes: a
+#                  region outage; the witness, in Hyderabad, stays up
 #   kill-gateway   kill the gateway; it stays down for 1 minute
 #   stop-leader    stop the Patroni leader's VM for 2 minutes: an automatic failover to the
 #                  other cloud; run it again to fail back
@@ -32,7 +33,7 @@ scenario=${1:?usage: act1.sh cut-clouds|stop-azure|stop-aws|kill-gateway|stop-le
 sha=${HARNESS_SHA:-$(git rev-parse HEAD)}
 hold=${HOLD:-120}
 label=${LABEL:-act1-$scenario}
-aws_vms=$(jq -r --arg ops "$ops" '.vms[] | select(.cloud == "aws" and .name != $ops) | .name' <<<"$topo")
+aws_vms=$(jq -r --arg ops "$ops" --arg r "$region" '.vms[] | select(.cloud == "aws" and .region == $r and .name != $ops) | .name' <<<"$topo")
 azure_vms=$(jq -r '.vms[] | select(.cloud == "azure") | .name' <<<"$topo")
 gateways=$(jq -r '.vms[] | select(.roles | index("gateway")) | .name' <<<"$topo")
 azure_ids() { az vm list -g "$(vm svc-z rg)" --query '[].id' -o tsv; }

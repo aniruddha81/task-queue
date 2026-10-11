@@ -2,6 +2,24 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-12 · The cloud load test died reading a byte count: `107117328TQ` (tooling bug)
+
+**Found by:** the first production run of `load.sh`, two minutes in, before it changed anything: `value too great for base (error token is "107117328TQ")`.
+
+**Cause:** Azure's Run Command doesn't return a script's exit status, so `run` appends `echo TQ-RUN-OK` and then filters out a line that is exactly the marker. `load.sh` counts WireGuard bytes with `printf "%.0f"`, which prints no final newline, so the marker landed on the same line as the number and survived the filter. Every earlier caller happened to end its output with a newline.
+
+**Fix:** `run` also strips the marker from the end of the last line. It's done once in `run` rather than in `load.sh`, so no other caller can hit it.
+
+**Lesson:** an in-band marker has to survive whatever the payload does. "The output ends with a newline" was an assumption nothing checked.
+
+## 2026-10-12 · `stop-aws` would have stopped nothing: the witness is in another region (tooling bug)
+
+**Found by:** planning the production experiments, before the run. `act1.sh stop-aws` took every AWS VM except `ops-a`, which since week 13 includes `wit` in Hyderabad, and passed all their IDs to a single `stop-instances` call in Mumbai. EC2 rejects the whole call when one ID is unknown in that region.
+
+**Fix:** `stop-aws` stops the AWS VMs in Mumbai only, which is the fault it means: a region outage, with the witness still up. Losing all of AWS is a known limit (two of three etcd votes), not an experiment.
+
+**Lesson:** a scenario written for one topology has to be re-read when the topology changes. Week 11's "all of AWS" and week 13's "AWS Mumbai" were the same thing until the witness arrived.
+
 ## 2026-10-11 · `make infra` waited forever for a command that was never sent
 
 **Found by:** the go-live gate's replacement of `pg-a`. The new VM was up, rejoined and streaming three minutes after it was created, and `infra.sh` was still waiting 45 minutes later, issuing no commands at all.
