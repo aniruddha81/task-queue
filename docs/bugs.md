@@ -2,6 +2,16 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-11 · `make infra` waited forever for a command that was never sent
+
+**Found by:** the go-live gate's replacement of `pg-a`. The new VM was up, rejoined and streaming three minutes after it was created, and `infra.sh` was still waiting 45 minutes later, issuing no commands at all.
+
+**Cause:** after the apply, every VM refreshes its mesh through `run` (`deploy/release/vmrun.sh`). For the new `pg-a`, AWS's `send-command` failed, because its SSM agent hadn't registered yet. The caller (`run … || echo warning`) runs `run` with `set -e` off, so the failure didn't stop it; it went on to poll for a command ID that was empty, and it read every "no such invocation" as "still pending", forever.
+
+**Fix:** `run` returns as soon as the send fails, and stops polling after 1,000 s (the command's own timeout is 900 s). The mesh refresh and the switch back to synchronous replication that `infra.sh` hadn't reached were run by hand.
+
+**Lesson:** `set -e` doesn't reach into a function called under `||`, `&&` or `if`. A helper that is ever called that way has to check its own steps.
+
 ## 2026-10-11 · A replaced database VM couldn't rejoin etcd for 48 minutes
 
 **Found by:** the go-live gate's first database VM replacement (`make infra REPLACE=pg-z`, under load). The new `pg-z` removed its dead predecessor from etcd, then every `member add` was refused: `etcdserver: unhealthy cluster`. `pg-a` kept serving alone, without a synchronous standby, the whole time.

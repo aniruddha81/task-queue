@@ -18,13 +18,16 @@ run() {
   if [ "$(vm "$name" cloud)" = aws ]; then
     local r
     r=$(vm "$name" region)
+    # Explicit failures: callers often run this under || or if, where set -e is off. A new
+    # VM's agent isn't registered yet, so the send fails, and there is nothing to wait for.
     cid=$(aws ssm send-command --region "$r" --instance-ids "$id" --document-name AWS-RunShellScript \
       --parameters "$(jq -nc --arg c "$cmd" '{commands: [$c], executionTimeout: ["900"]}')" \
-      --query Command.CommandId --output text)
-    while :; do
+      --query Command.CommandId --output text) || return 1
+    for i in $(seq 200); do # the command's own timeout (900 s), and some
       sleep 5
       status=$(aws ssm get-command-invocation --region "$r" --command-id "$cid" --instance-id "$id" --query Status --output text 2>/dev/null || echo Pending)
       case $status in Pending | InProgress | Delayed) ;; *) break ;; esac
+      [ "$i" = 200 ] && { echo "run $name: no result after 1000 s" >&2; return 1; }
     done
     # The command's stdout to stdout, its stderr to stderr (each truncated at 24 KB by SSM).
     aws ssm get-command-invocation --region "$r" --command-id "$cid" --instance-id "$id" --query StandardOutputContent --output text

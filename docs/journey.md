@@ -189,6 +189,18 @@ This is the centerpiece, and the reason every later claim can be trusted.
   - **Both schedulers hung on silently dead database connections** after a network cut, and nobody reaped for 7 minutes. Every leadership step now has a deadline, and a test reproduces the dead connection with a proxy that swallows traffic.
 - **Vantage points matter:** probing from the laptop's home network gave false failures, so experiments run on a GitHub runner too.
 
+### Week 13: Act 2, the database in both clouds
+
+- **Three sites:** Postgres on `pg-a` (AWS) and `pg-z` (Azure) under Patroni, synchronous while both are healthy; etcd on both and on a witness `wit` (AWS Hyderabad), so a failover needs a majority.
+- **Joining safely:** a new or replaced etcd member joins the running cluster as a learner and is promoted once caught up. Only a fresh session founds a cluster, because a member that founded one when it couldn't reach its peers would give Patroni a second, empty cluster and a second primary.
+- **Infrastructure from the admin machine:** `make infra` applies Terraform one VM at a time through the same drain-and-hand-over cycle as a rollout, and refuses to remove a database VM. CI keeps a role that can run commands on VMs and nothing more.
+- **`maintenance.yml`:** a 15-minute sweep that alerts when a twin is lost (the public probe can't see that), and weekly rolling reboots.
+- **The go-live gate** ([act2-database.md](results/act2-database.md)): failover AWS→Azure and back, a cut between the clouds, the witness lost, and both database VMs replaced, each under the chaos checker and the probe. No acknowledged job was lost anywhere, and replacing the primary failed 0 of 24,385 requests. A crashed primary still costs about 20 s with no primary (Patroni's minimum lease), and a cut about 25 s for clients sent to the cut-off cloud.
+- **Bugs, and what each taught:**
+  - **The week-12 deadline fix missed the chore's own queries,** a context captured by a closure. It surfaced as a test that failed one run in three; flaky meant a real race.
+  - **A replaced VM couldn't rejoin etcd for 48 minutes,** because an earlier experiment left the leader believing a healthy peer was gone. An experiment's fault can outlive the experiment.
+  - **Run Command waited forever for a command that was never sent.** A helper called under `||` runs without `set -e`, so it has to fail explicitly.
+
 ---
 
 ## 3. Lessons that kept coming back
@@ -196,22 +208,23 @@ This is the centerpiece, and the reason every later claim can be trusted.
 1. **The database is the coordinator.** Correctness lives in single SQL statements and constraints: `SKIP LOCKED` claims, token-fenced updates, unique keys, epoch-fenced chores. Code can crash at any line; a constraint can't be skipped.
 2. **Fencing tokens beat timing.** Leases and clocks only decide *when*. Lease tokens and epochs decide *who may write*, so a paused process, a slow network or a wrong clock costs time, never correctness.
 3. **Make retries safe, then retry freely.** Idempotency keys (submit), effect keys (sinks) and the retry rule in the gateway's failover all exist so that "I don't know if it worked" can be answered by doing it again.
-4. **Every network call needs a deadline.** A partition leaves connections silently dead: no error, no reply. It bit twice, the HTTP/2 claims in week 7 and the scheduler's database calls in week 12, and each time the fix was a liveness check or a deadline.
+4. **Every network call needs a deadline.** A partition leaves connections silently dead: no error, no reply. It bit in week 7 (HTTP/2 claims), week 12 (the scheduler's database calls) and week 13 (the chore inside them, a pooled connection to a stopped primary, a synchronous standby behind a cut), and each time the fix was a liveness check or a deadline.
 5. **Test the tester.** The checker fails a guarantee that wasn't exercised. Mutants prove each check can fail. The sweep and the probe now fail when they can't see, and CI's chaos step now fails when the checker does. A check that can't fail proves nothing.
 6. **Safety and liveness are different.** Act 1 lost availability in every experiment and never lost safety. Act 2 removes single points of failure one layer at a time.
 7. **Read the evidence, not the docs.** The OIDC subject format came from CloudTrail's refused request, and the chaos stall from the scheduler's logs. Guessing would have meant loosening a security rule or adding a blind retry.
 
 ---
 
-## 4. Where it stands now (Oct 9, 2026)
+## 4. Where it stands now (Oct 11, 2026)
 
-- **Live:** `https://tq-aniruddha81.trafficmanager.net`, on six VMs:
+- **Live:** `https://tq-aniruddha81.trafficmanager.net`, on eight VMs:
   - AWS Mumbai: `svc-a`, `work-a`, `pg-a`, `ops-a`
-  - Azure Central India: `svc-z`, `work-z`
+  - AWS Hyderabad: `wit` (the etcd witness)
+  - Azure Central India: `svc-z`, `work-z`, `pg-z`
 - **Serving:** both gateways, with one shared Let's Encrypt certificate.
 - **Releases:** every push to `release` runs CI, the chaos test, a multi-arch build, a drained rolling deploy under the external probe, a smoke test, and automatic rollback.
-- **Monitoring:** `probe.yml` checks the public name every 15 minutes from GitHub, and GitHub emails on a failure.
-- **Still single:** the database (`pg-a`). Stopping it stops every write. Week 13 fixes that.
+- **Monitoring:** `probe.yml` checks the public name every 15 minutes from GitHub, and `maintenance.yml` checks every VM, gateway, database node and etcd member; GitHub emails on a failure.
+- **No single point of failure left** in either cloud: the database fails over automatically in either direction.
 
 ### Open issues to keep in mind
 
@@ -225,7 +238,6 @@ This is the centerpiece, and the reason every later claim can be trusted.
 
 | Week | Work |
 | --- | --- |
-| 13 | The database in both clouds: Patroni with a synchronous standby on `pg-z` (Azure), etcd on `pg-a`, `pg-z` and a witness `wit` (AWS Hyderabad), so failover needs a majority of three sites. The automatic infrastructure stage and `maintenance.yml`. **Go-live gate:** failover AWS→Azure and back with zero acknowledged jobs lost, the majority side serving through a cut between the clouds, the witness lost with no effect, and a database VM replaced with no failed requests. |
 | 14–15 | Production: VMs run 24/7; every survivable fault runs in production under the probe; cloud load tests and cost per million jobs. |
 | 16 | The design doc, decision records, a demo video, the cost report, and the keep-or-destroy decision. |
 

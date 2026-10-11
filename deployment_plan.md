@@ -116,6 +116,8 @@ jobs:
 | **Replace a database VM** | Replace the **replica** first and wait until it is in sync. Then `patronictl switchover` to it (a few seconds of slower writes, with no failures thanks to the internal retries), and replace the old primary |
 | **Destroy** a database VM, a disk or the witness, with no replacement | **The workflow refuses and emails you.** Deleting data is the one thing that is never automatic. |
 
+*As built (week 13):* this stage runs from the admin machine as `make infra` (`deploy/release/infra.sh`), not in `release.yml`. A CI apply would need the release role to create IAM roles and Azure role assignments, which is close to account admin, plus the admin's keys and address, so the release role stays able to run commands on VMs and nothing more. The classification is as above, with one tightening: a plan that changes more than one existing VM at once is refused, since Terraform without `-exclude` can't apply them one at a time. `make infra REPLACE="pg-z"` replaces a VM on purpose. After every apply each VM refreshes its files and mesh (`tq-converge none`), because a new or replaced VM has new peers or a new private address. A new member of the database cluster joins etcd as a learner and is promoted once it has caught up; only a fresh session (`make up` on an empty state) founds a cluster, so a member that can't reach its peers never starts a second one.
+
 ### Stage 4 — `rollout.sh`, zero-downtime application deploy
 
 1. **Preflight.** Every VM must answer a run command (AWS SSM or Azure Run Command), Patroni must report a healthy leader with a streaming replica, and no chaos run may hold the lock. If any check fails, nothing changes; the workflow waits 2 minutes and retries 3 times, then fails and emails you.
@@ -128,7 +130,7 @@ jobs:
    4. **Re-enable** the Traffic Manager endpoint, and wait until the probe sees it healthy before moving on.
 
    Because each service's twin in the other cloud is serving the whole time, no request fails.
-5. **Postgres, Patroni and etcd are never restarted by `docker compose`.** If their images changed, `rollout.sh` does a Patroni rolling restart: replica first, then switchover, then the old primary. etcd goes one member at a time, so it always keeps a majority.
+5. **Postgres, Patroni and etcd are never restarted by `docker compose`.** If their images changed, `rollout.sh` does a Patroni rolling restart: replica first, then switchover, then the old primary. etcd goes one member at a time, so it always keeps a majority. *As built (week 13):* a database VM picks up a new image when it is replaced (`make infra REPLACE=<replica>`, then the other, which hands over first). That re-clones the database, which takes seconds at this size; an in-place rolling restart is worth building once it doesn't.
 6. **Smoke test.** Through the Traffic Manager name:
    - one job with `affinity = 'aws'` and one with `affinity = 'azure'` must succeed;
    - every `/version` endpoint must report the new commit;
@@ -155,9 +157,9 @@ While the rollout runs, a separate job on a GitHub-hosted runner, outside both c
 | --- | --- | --- |
 | OS security patches | `unattended-upgrades`, with no automatic reboot | None |
 | Reboots (when `/var/run/reboot-required` exists) | A weekly `maintenance.yml` reboots VMs one at a time, with the same drain, reboot, ready, next steps. Database VMs go replica first, then a switchover. | None |
-| Postgres minor upgrade | Bump the image tag in the repo and push to `release`; Patroni does the rolling restart | None |
+| Postgres minor upgrade | Bump the image tag in the repo and push to `release`; Patroni does the rolling restart. *As built:* then `make infra REPLACE=pg-z`, then `REPLACE=pg-a` | None |
 | Certificates | Both gateways use Go's `certmagic` library with **shared storage in Postgres**. They obtain and renew one Let's Encrypt certificate for the Traffic Manager name automatically, and either gateway can answer the validation request. Each gateway keeps a copy on disk, so a database outage doesn't affect TLS. *Built with `golang.org/x/crypto/acme/autocert` (already a dependency) over TLS-ALPN-01 on 443, so no port 80; until week 12's second gateway, the cache is the gateway's own volume.* | None |
-| Unhealthy VM | The `maintenance.yml` health sweep (every 15 minutes) replaces any VM whose health check has failed for 10 minutes, using the rolling replace | None, because its twin serves meanwhile |
+| Unhealthy VM | The `maintenance.yml` health sweep (every 15 minutes) replaces any VM whose health check has failed for 10 minutes, using the rolling replace. *As built:* the sweep checks every VM, both gateways in Traffic Manager, Patroni (a leader, every replica streaming) and etcd (every member healthy), and **emails on any failure without changing anything**: replacing needs infrastructure rights (above), and here only deliberate acts stop a VM (the budget action, `make stop`, experiments), while AWS and Azure restart a VM whose host fails. What the sweep catches is the public probe's blind spot, a lost twin while the other one serves. | None, because its twin serves meanwhile |
 | Uptime monitoring | Traffic Manager's health-probe history, plus a probe workflow on a GitHub-hosted runner every 15 minutes that emails you on failure | — |
 
 ---
@@ -200,11 +202,12 @@ Running all 8 VMs 24/7 costs more than running them on demand. These are estimat
 .github/workflows/release.yml       push to release: verify, build, infra, deploy, probe
 .github/workflows/maintenance.yml   weekly rolling reboots, 15-minute health sweep
 deploy/release/rollout.sh           drain, deploy, smoke test, rollback (application)
-deploy/release/infra.sh             plan classification and rolling replace (infrastructure)
+deploy/release/infra.sh             plan classification and rolling replace (infrastructure; make infra)
+deploy/release/maintain.sh          the sweep and the rolling reboots, for maintenance.yml
 deploy/release/probe/               the external no-retry probe
 deploy/vm/deploy.sh                 per-VM converge, called by rollout and at boot
 deploy/vm/<role>.compose.yml        one Compose file per role, versioned with the code
-deploy/vm/patroni.yml               Patroni configuration (synchronous_mode: on)
+deploy/local/patroni/patroni.yml    Patroni configuration (synchronous_mode: on), the same image locally and in the cloud
 ```
 
 ---
@@ -226,6 +229,8 @@ deploy/vm/patroni.yml               Patroni configuration (synchronous_mode: on)
 ## Known limits
 
 - **A component that crashes takes its in-flight requests with it.** Clients retry with the same key and succeed on the twin. "Zero failed requests" is promised for planned events only.
+- **A crashed database primary leaves about 20 s with no primary** (measured in week 13: [act2-database.md](docs/results/act2-database.md)). Patroni promotes the replica only when the dead leader's key expires, and it refuses a `ttl` below 20 s. Requests in that window wait (the services retry database calls for up to 30 s), so they are slow for a client with a 30 s timeout and fail for one with 10 s.
+- **A cut between the clouds fails requests sent to the cut-off side** for the 20–30 s Traffic Manager takes to stop returning its gateway (a probe every 10 s, one failure tolerated, a 10 s TTL). Zero tolerated failures would cut about 10 s, at the risk of one slow health check pulling a healthy gateway.
 - **A double failure can lose data or availability.** Losing the primary's disk while the standby is out of sync loses the acknowledged jobs from that window. Losing two of the three etcd sites stops automatic failover.
 - **Provider outages:** Azure Traffic Manager (the public name stops resolving, even though AWS is fine), GitHub (deploys pause; the running service is unaffected) and both clouds at once.
 - **DNS caching:** a client that ignores TTLs and also keeps only one IP can still reach a stopped gateway after a crash. Clients that keep both IPs (browsers, Go) fall back immediately. For planned events, the 60 s drain covers resolvers that round TTLs up.
