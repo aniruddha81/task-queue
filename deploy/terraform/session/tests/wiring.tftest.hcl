@@ -32,7 +32,7 @@ mock_provider "azurerm" {
   }
   mock_resource "azurerm_linux_virtual_machine" {
     defaults = {
-      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/tq-session/providers/Microsoft.Compute/virtualMachines/vm"
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/tq-session/providers/Microsoft.Compute/virtualMachines/vm"
     }
   }
   mock_resource "azurerm_key_vault_secret" {
@@ -67,15 +67,15 @@ override_data {
   }
 }
 
-run "stateless_twins" { # the default role map: week 12
+run "act2" { # the default role map: week 13
   command = apply
 
   assert {
-    condition     = [for v in jsondecode(aws_ssm_parameter.topology.value).vms : v.name] == ["pg-a", "ops-a", "svc-a", "svc-z", "work-a", "work-z"]
+    condition     = [for v in jsondecode(aws_ssm_parameter.topology.value).vms : v.name] == ["pg-a", "pg-z", "wit", "ops-a", "svc-a", "svc-z", "work-a", "work-z"]
     error_message = "rollout order: data, ops, the service VMs one at a time, workers"
   }
   assert {
-    condition     = [for v in jsondecode(aws_ssm_parameter.topology.value).vms : v.stage] == ["data", "app", "app", "app", "app", "app"]
+    condition     = [for v in jsondecode(aws_ssm_parameter.topology.value).vms : v.stage] == ["data", "data", "data", "app", "app", "app", "app", "app"]
     error_message = "only database VMs are in the data stage"
   }
   assert {
@@ -115,8 +115,24 @@ run "stateless_twins" { # the default role map: week 12
     error_message = "only auth's VMs hold the signing key"
   }
   assert {
-    condition     = strcontains(aws_ssm_parameter.file["pg-a/tq.env"].value, "ETCD_INITIAL_CLUSTER='pg-a=http://pg-a:2380'")
-    error_message = "one database until week 13: a one-member etcd on pg-a"
+    condition     = keys(module.hyderabad.ids) == ["wit"]
+    error_message = "the witness lives in Hyderabad"
+  }
+  assert {
+    condition     = strcontains(aws_ssm_parameter.file["pg-a/tq.env"].value, "ETCD_INITIAL_CLUSTER='pg-a=http://pg-a:2380,pg-z=http://pg-z:2380,wit=http://wit:2380'")
+    error_message = "three etcd members, one per site"
+  }
+  assert {
+    condition     = strcontains(aws_ssm_parameter.file["wit/tq.env"].value, "ETCD_BOOTSTRAP='false'") && strcontains(jsondecode(azurerm_key_vault_secret.vm["pg-z"].value)["tq.env"], "ETCD_BOOTSTRAP='false'")
+    error_message = "in a running session, a member with no data only joins; it never founds a cluster"
+  }
+  assert {
+    condition     = strcontains(jsondecode(azurerm_key_vault_secret.vm["svc-z"].value)["tq.env"], "@pg-a:5432,pg-z:5432/jobs?target_session_attrs=read-write&connect_timeout=3&")
+    error_message = "services list both database nodes, find the primary, and don't wait on a dead one"
+  }
+  assert {
+    condition     = !strcontains(aws_ssm_parameter.file["wit/tq.env"].value, "PASSWORD") && !contains(keys(aws_ssm_parameter.file), "wit/certs/postgres.key")
+    error_message = "the witness holds no database secret"
   }
   assert {
     condition     = contains(keys(aws_ssm_parameter.file), "ops-a/prometheus.yml") && !contains(keys(aws_ssm_parameter.file), "svc-a/prometheus.yml")
@@ -136,43 +152,14 @@ run "stateless_twins" { # the default role map: week 12
   }
 }
 
-run "act2_full" { # week 13: the database in both clouds and the witness
-  command = apply
+run "fresh_session" { # make up on an empty state
+  command = plan
   variables {
-    vms = {
-      "svc-a"  = { cloud = "aws", mesh = 11, roles = ["gateway", "auth", "jobs", "dispatch", "scheduler"] }
-      "work-a" = { cloud = "aws", mesh = 12, roles = ["worker"] }
-      "pg-a"   = { cloud = "aws", mesh = 13, roles = ["etcd", "postgres"] }
-      "ops-a"  = { cloud = "aws", mesh = 14, roles = ["ops"] }
-      "svc-z"  = { cloud = "azure", mesh = 21, roles = ["gateway", "auth", "jobs", "dispatch", "scheduler"] }
-      "work-z" = { cloud = "azure", mesh = 22, roles = ["worker"] }
-      "pg-z"   = { cloud = "azure", mesh = 23, roles = ["etcd", "postgres"] }
-      "wit"    = { cloud = "aws", mesh = 31, region = "ap-south-2", size = "t4g.micro", roles = ["etcd"] }
-    }
+    etcd_bootstrap = true
   }
 
   assert {
-    condition     = keys(module.hyderabad.ids) == ["wit"]
-    error_message = "the witness lives in Hyderabad"
-  }
-  assert {
-    condition     = strcontains(aws_ssm_parameter.file["pg-a/tq.env"].value, "ETCD_INITIAL_CLUSTER='pg-a=http://pg-a:2380,pg-z=http://pg-z:2380,wit=http://wit:2380'")
-    error_message = "three etcd members, one per site"
-  }
-  assert {
-    condition     = strcontains(jsondecode(azurerm_key_vault_secret.vm["svc-z"].value)["tq.env"], "AUTH_URL='https://svc-z:8083,https://svc-a:8083'")
-    error_message = "each gateway calls its own cloud's auth"
-  }
-  assert {
-    condition     = strcontains(jsondecode(azurerm_key_vault_secret.vm["svc-z"].value)["tq.env"], "@pg-a:5432,pg-z:5432/jobs?target_session_attrs=read-write")
-    error_message = "services list both database nodes and find the primary"
-  }
-  assert {
-    condition     = keys(azurerm_traffic_manager_external_endpoint.gateway) == ["svc-a", "svc-z"]
-    error_message = "both gateways are Traffic Manager endpoints"
-  }
-  assert {
-    condition     = length(azurerm_network_security_group.vms[0].security_rule) == 2
-    error_message = "the Azure gateway opens 443"
+    condition     = strcontains(aws_ssm_parameter.file["wit/tq.env"].value, "ETCD_BOOTSTRAP='true'")
+    error_message = "a fresh session's etcd members found the cluster together"
   }
 }

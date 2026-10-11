@@ -85,12 +85,17 @@ smoke() { # one job per cloud must succeed through the public name, on the new v
   done
 }
 
-# 1. Preflight: every VM answers. If not, change nothing; retry a few times, then fail.
+# 1. Preflight: every VM answers, and Patroni has a leader with every other database VM
+# streaming from it. If not, change nothing; retry a few times, then fail.
+pg=$(jq -r '[.vms[] | select(.roles | index("postgres")) | .name][0]' <<<"$topo")
+replicas=$(jq '[.vms[] | select(.roles | index("postgres"))] | length - 1' <<<"$topo")
+healthy="curl -fsS http://localhost:8008/cluster | jq -e '([.members[] | select(.role == \"leader\" and .state == \"running\")] | length == 1) and ([.members[] | select(.state == \"streaming\")] | length == $replicas)'"
 for attempt in 1 2 3 4; do
   down=
   for name in $(jq -r '.vms[].name' <<<"$topo"); do
     run "$name" "docker info >/dev/null" >/dev/null 2>&1 || down="$down $name"
   done
+  [ -n "$down" ] || run "$pg" "$healthy" >/dev/null 2>&1 || down=" Patroni (no leader, or a replica not streaming)"
   [ -z "$down" ] && break
   [ $attempt = 4 ] && { echo "preflight: no answer from$down; nothing changed"; exit 1; }
   echo "preflight: no answer from$down; retrying in 2 minutes"

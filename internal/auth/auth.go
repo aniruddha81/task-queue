@@ -96,8 +96,8 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request) {
 	var id uuid.UUID
 	var hash string
 	var admin bool
-	_, err := pgretry.Do(r.Context(), func() (struct{}, error) { // rides out a database failover
-		return struct{}{}, s.db.QueryRow(r.Context(), `SELECT id, password_hash, admin FROM users WHERE email = $1`, c.Email).
+	_, err := pgretry.Do(r.Context(), func(ctx context.Context) (struct{}, error) { // rides out a database failover
+		return struct{}{}, s.db.QueryRow(ctx, `SELECT id, password_hash, admin FROM users WHERE email = $1`, c.Email).
 			Scan(&id, &hash, &admin)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {

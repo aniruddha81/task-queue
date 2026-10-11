@@ -31,9 +31,10 @@ bootstrap:
 	  gh variable set "$${v^^}" --body "$$($(P) output -raw $$v)"; done
 	@echo "Once, by hand: GitHub > Settings > Environments > cloud > deployment branches: release only."
 
+# An empty state is a fresh session: only then do the etcd members found a new cluster.
 up:
 	$(S) init -input=false -backend-config=bucket=$(STATE)
-	$(S) apply -var admin_cidr=$$(curl -fsS https://checkip.amazonaws.com)/32
+	n=$$($(S) state list | wc -l); 	$(S) apply -var admin_cidr=$$(curl -fsS https://checkip.amazonaws.com)/32 $$([ "$$n" = 0 ] && echo -var etcd_bootstrap=true)
 
 down:
 	$(S) init -input=false -backend-config=bucket=$(STATE)

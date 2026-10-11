@@ -31,6 +31,41 @@ ready() {
   return 1
 }
 
+# etcd membership, through the other members (a learner can't answer for the cluster).
+etcdctl() {
+  local peers
+  peers=$(tr , '\n' <<<"$ETCD_INITIAL_CLUSTER" | grep -v "^$VM_NAME=" | sed 's/^[^=]*=//; s/2380$/2379/' | paste -sd, -)
+  docker run --rm --network host "$(compose etcd config --images)" etcdctl --endpoints="$peers" --dial-timeout=3s --command-timeout=10s "$@"
+}
+me() { # this VM's member ID, from `member list` (ID, status, name, peer URL, client URL, learner)
+  awk -F', ' -v u="http://$VM_NAME:2380" -v l="$1" '$4 == u && (l == "" || $6 == l) {print $1}'
+}
+# A new or replaced member joins the running cluster as a learner: it doesn't count toward
+# quorum, so adding it can't stall the cluster. It never founds a cluster because it can't
+# reach one: in a running session that would be a second cluster, and Patroni would
+# bootstrap a second primary on it. Only a fresh session (ETCD_BOOTSTRAP) founds one.
+etcd_join() {
+  local list old out
+  list=$(etcdctl member list) || { echo "etcd: no running cluster reachable to join yet" >&2; return 1; }
+  old=$(me "" <<<"$list") # a replaced VM keeps its name: its dead incarnation goes first
+  [ -z "$old" ] || etcdctl member remove "$old"
+  docker volume rm -f tq-etcd_etcd >/dev/null # a removed member's data can't rejoin
+  out=$(etcdctl member add "$VM_NAME" --learner --peer-urls="http://$VM_NAME:2380")
+  ETCD_CLUSTER=$(sed -n 's/^ETCD_INITIAL_CLUSTER="\(.*\)"$/\1/p' <<<"$out") ETCD_STATE=existing compose etcd up -d
+}
+# A learner becomes a voter once it has caught up with the leader; until then promote fails.
+etcd_promote() {
+  local id
+  id=$(etcdctl member list 2>/dev/null | me true) || return 0 # can't tell: a later converge will
+  [ -n "$id" ] || return 0
+  for _ in $(seq 60); do
+    etcdctl member promote "$id" 2>/dev/null && return 0
+    sleep 2
+  done
+  echo "etcd: $VM_NAME is still a learner" >&2
+  return 1
+}
+
 if [ "${2:-}" = migrate ]; then
   migrate jobs "$JOBS_DB_URL"
   migrate auth "$AUTH_DB_URL"
@@ -42,14 +77,25 @@ for role in $ROLES; do
   echo "--- $role"
   compose "$role" pull -q
   case $role in
-  etcd | postgres)
-    # Never restarted by a deploy, only started: a new database image is applied by a
-    # Patroni rolling restart (replica, switchover, old primary), not here.
-    compose "$role" up -d --no-recreate
-    if [ "$role" = postgres ]; then
-      for _ in $(seq 60); do compose postgres exec -T patroni pg_isready -qh localhost && break || sleep 2; done
-      compose postgres exec -T patroni pg_isready -h localhost
+  etcd)
+    # Never restarted by a deploy, only created and started (as postgres below).
+    if [ -z "$(compose etcd ps -aq)" ]; then
+      if [ "${ETCD_BOOTSTRAP:-}" = true ]; then
+        ETCD_CLUSTER=$ETCD_INITIAL_CLUSTER ETCD_STATE=new compose etcd up -d
+      else
+        etcd_join
+      fi
     fi
+    compose etcd up -d --no-recreate
+    etcd_promote
+    ;;
+  postgres)
+    # Never restarted by a deploy, only started: a new database image is applied by a
+    # Patroni rolling restart (replica, switchover, old primary), not here. A new node with
+    # no data clones the primary.
+    compose postgres up -d --no-recreate
+    for _ in $(seq 150); do compose postgres exec -T patroni pg_isready -qh localhost && break || sleep 2; done
+    compose postgres exec -T patroni pg_isready -h localhost
     ;;
   ops)
     # Every migration, not just the sinks': a VM that boots into a fresh session (make up)

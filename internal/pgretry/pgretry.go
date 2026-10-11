@@ -18,12 +18,20 @@ import (
 // Limit is how long Do keeps retrying. A Patroni failover finishes well within it.
 const Limit = 30 * time.Second
 
+// Attempt bounds each try. A primary that stopped (a VM gone, a cut between clouds) sends no
+// error, so a query on a pooled connection to it would otherwise wait for the whole request.
+const Attempt = 5 * time.Second
+
 // Do runs op until it succeeds, fails for a reason retrying can't fix, ctx ends, or Limit passes.
-func Do[T any](ctx context.Context, op func() (T, error)) (T, error) {
+// Each try gets its own context, ending after Attempt.
+func Do[T any](ctx context.Context, op func(context.Context) (T, error)) (T, error) {
 	deadline := time.Now().Add(Limit)
 	for wait := 100 * time.Millisecond; ; wait = min(wait*2, 2*time.Second) {
-		v, err := op()
-		if err == nil || !Transient(err) || time.Now().Add(wait).After(deadline) {
+		actx, cancel := context.WithTimeout(ctx, Attempt)
+		v, err := op(actx)
+		timedOut := actx.Err() != nil && ctx.Err() == nil
+		cancel()
+		if err == nil || !(timedOut || Transient(err)) || time.Now().Add(wait).After(deadline) {
 			return v, err
 		}
 		select {

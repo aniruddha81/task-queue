@@ -31,10 +31,10 @@ variable "vms" {
     region = optional(string)
     size   = optional(string)
   }))
-  # Act 2's stateless tier (week 12): every stateless service in both clouds, so each has a
-  # twin to fail over to and to serve while it is deployed. Act 1 (week 11) had the gateway
-  # and jobs on svc-a only and auth on svc-z only; see docs/results/act1-fragility.md.
-  # One database still (pg-a) until week 13.
+  # Act 2: every stateless service in both clouds (week 12), so each has a twin to fail over
+  # to and to serve while it is deployed; Postgres in both clouds under Patroni, with etcd on
+  # three sites so failover needs a majority (week 13). Act 1 (week 11) had the gateway and
+  # jobs on svc-a only, auth on svc-z only and one database; see docs/results/act1-fragility.md.
   default = {
     # Roles converge in this order: the gateway last, so its upstreams on the VM are already new.
     "svc-a"  = { cloud = "aws", mesh = 11, roles = ["auth", "jobs", "dispatch", "scheduler", "gateway"] }
@@ -43,9 +43,8 @@ variable "vms" {
     "ops-a"  = { cloud = "aws", mesh = 14, roles = ["ops"] }
     "svc-z"  = { cloud = "azure", mesh = 21, roles = ["auth", "jobs", "dispatch", "scheduler", "gateway"] }
     "work-z" = { cloud = "azure", mesh = 22, roles = ["worker"] }
-    # Act 2 (week 13) adds:
-    # "pg-z" = { cloud = "azure", mesh = 23, roles = ["etcd", "postgres"] }
-    # "wit"  = { cloud = "aws", mesh = 31, region = "ap-south-2", size = "t4g.micro", roles = ["etcd"] }
+    "pg-z"   = { cloud = "azure", mesh = 23, roles = ["etcd", "postgres"] }
+    "wit"    = { cloud = "aws", mesh = 31, region = "ap-south-2", size = "t4g.micro", roles = ["etcd"] } # the witness
   }
   validation {
     condition = alltrue([for r in ["gateway", "auth", "jobs", "dispatch", "scheduler", "worker", "etcd", "postgres", "ops"] :
@@ -56,6 +55,12 @@ variable "vms" {
     condition     = alltrue([for v in var.vms : contains(["aws", "azure"], v.cloud) && v.mesh > 2 && v.mesh < 255])
     error_message = "cloud is aws or azure; mesh is 3-254 (10.99.0.2 is the admin laptop)."
   }
+}
+
+variable "etcd_bootstrap" {
+  description = "Only for a fresh session (make up on an empty state): etcd members with no data found a new cluster together. Otherwise a member with no data (a new or replaced VM) only ever joins the running cluster."
+  type        = bool
+  default     = false
 }
 
 variable "admin_cidr" {
@@ -138,8 +143,10 @@ locals {
   ops_vm   = [for m in local.names : m if contains(local.vms[m].roles, "ops")][0]
   etcd_vms = [for m in local.names : m if contains(local.vms[m].roles, "etcd")]
   pg_hosts = join(",", [for m in local.names : "${m}:5432" if contains(local.vms[m].roles, "postgres")])
+  # connect_timeout is per host: a stopped database VM sends no refusal, so without it a new
+  # connection would wait on it instead of moving on to the other node.
   db_url = { for db in ["jobs", "auth"] :
-    db => "postgres://${db}_svc:${random_password.pw["${db}_db"].result}@${local.pg_hosts}/${db}?target_session_attrs=read-write&sslmode=verify-full&sslrootcert=/certs/ca.crt"
+    db => "postgres://${db}_svc:${random_password.pw["${db}_db"].result}@${local.pg_hosts}/${db}?target_session_attrs=read-write&connect_timeout=3&sslmode=verify-full&sslrootcert=/certs/ca.crt"
   }
 
   # Each VM's settings, for deploy/vm/<role>.compose.yml. Secrets only go to VMs whose roles use them.
@@ -167,7 +174,10 @@ locals {
       SMTP_ADDR     = "${local.ops_vm}:1025"
       WEBHOOK_ALLOW = "https://${local.ops_vm}:8090/webhook"
     } : {},
-    contains(v.roles, "etcd") ? { ETCD_INITIAL_CLUSTER = join(",", [for m in local.etcd_vms : "${m}=http://${m}:2380"]) } : {},
+    contains(v.roles, "etcd") ? {
+      ETCD_INITIAL_CLUSTER = join(",", [for m in local.etcd_vms : "${m}=http://${m}:2380"])
+      ETCD_BOOTSTRAP       = tostring(var.etcd_bootstrap)
+    } : {},
     contains(v.roles, "postgres") ? {
       ETCD_HOSTS                   = join(",", [for m in local.etcd_vms : "${m}:2379"])
       PATRONI_SUPERUSER_PASSWORD   = random_password.pw["superuser"].result

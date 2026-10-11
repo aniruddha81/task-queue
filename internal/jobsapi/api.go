@@ -101,8 +101,8 @@ func (a *api) submit(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 		job     queue.Job
 		created bool
 	}
-	res, err := pgretry.Do(r.Context(), func() (result, error) { // safe: the key makes it idempotent
-		job, created, err := a.store.Submit(r.Context(), j)
+	res, err := pgretry.Do(r.Context(), func(ctx context.Context) (result, error) { // safe: the key makes it idempotent
+		job, created, err := a.store.Submit(ctx, j)
 		return result{job, created}, err
 	})
 	job, created := res.job, res.created
@@ -141,7 +141,7 @@ func (a *api) get(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 		writeError(w, http.StatusNotFound, queue.ErrNotFound.Error())
 		return
 	}
-	job, err := a.store.Get(r.Context(), owner, id)
+	job, err := pgretry.Do(r.Context(), func(ctx context.Context) (queue.Job, error) { return a.store.Get(ctx, owner, id) })
 	a.respond(w, job, err)
 }
 
@@ -151,7 +151,7 @@ func (a *api) cancel(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 		writeError(w, http.StatusNotFound, queue.ErrNotFound.Error())
 		return
 	}
-	job, err := pgretry.Do(r.Context(), func() (queue.Job, error) { return a.store.Cancel(r.Context(), owner, id) })
+	job, err := pgretry.Do(r.Context(), func(ctx context.Context) (queue.Job, error) { return a.store.Cancel(ctx, owner, id) })
 	a.respond(w, job, err)
 }
 
@@ -161,7 +161,7 @@ func (a *api) redrive(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 		writeError(w, http.StatusNotFound, queue.ErrNotFound.Error())
 		return
 	}
-	job, err := pgretry.Do(r.Context(), func() (queue.Job, error) { return a.store.Redrive(r.Context(), owner, id) })
+	job, err := pgretry.Do(r.Context(), func(ctx context.Context) (queue.Job, error) { return a.store.Redrive(ctx, owner, id) })
 	a.respond(w, job, err)
 }
 
@@ -239,7 +239,7 @@ func (a *api) list(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 		}
 		f.Limit = n
 	}
-	jobs, err := a.store.List(r.Context(), owner, f)
+	jobs, err := pgretry.Do(r.Context(), func(ctx context.Context) ([]queue.Job, error) { return a.store.List(ctx, owner, f) })
 	if err != nil {
 		a.log.Error("list", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

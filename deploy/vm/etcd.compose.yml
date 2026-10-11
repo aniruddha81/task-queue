@@ -1,5 +1,6 @@
 # Role etcd: one member of Patroni's consensus store. It listens only on the mesh and on
-# localhost, and WireGuard encrypts its traffic.
+# localhost, and WireGuard encrypts its traffic. deploy.sh sets ETCD_CLUSTER and ETCD_STATE
+# when it creates the member; etcd ignores both once its data directory exists.
 services:
   etcd:
     image: quay.io/coreos/etcd:v3.6.6
@@ -13,8 +14,8 @@ services:
       - --advertise-client-urls=http://${VM_NAME}:2379
       - --listen-peer-urls=http://${MESH_IP}:2380
       - --initial-advertise-peer-urls=http://${VM_NAME}:2380
-      - --initial-cluster=${ETCD_INITIAL_CLUSTER}
-      - --initial-cluster-state=new
+      - --initial-cluster=${ETCD_CLUSTER:-}
+      - --initial-cluster-state=${ETCD_STATE:-existing}
       - --initial-cluster-token=taskqueue
     volumes: ["etcd:/etcd-data"]
 
