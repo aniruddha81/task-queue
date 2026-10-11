@@ -51,7 +51,7 @@ fi
 mkdir -p /opt/tq-harness/results
 docker rm -f torture >/dev/null 2>&1 || true
 docker run -d --name torture --network host -w /src -v $d:/src:ro -v tq-gomod:/go/pkg/mod -v tq-gocache:/root/.cache/go-build \
-  -v /etc/tq/certs:/certs:ro -v /opt/tq-harness/results:/out golang:1.27 \
+  -v /etc/tq/certs:/certs:ro -v /opt/tq-harness/results:/out golang:@GO@ \
   go run ./cmd/torture -gateway https://@FQDN@ -ca "" -password "$HARNESS_PASSWORD" \
     -jobs-db "$JOBS_DB_URL" -sinks-db "$SINKS_DB_URL" -mailpit http://localhost:8025 -webhook https://@OPS@:8090/webhook \
     -faults=false -scenario @SCENARIO@ -duration @LOAD@ -quiesce 10m -out /out'
@@ -60,6 +60,7 @@ harness=${harness//@FQDN@/$fqdn}
 harness=${harness//@OPS@/$ops}
 harness=${harness//@SCENARIO@/$scenario}
 harness=${harness//@LOAD@/${LOAD:-6m}}
+harness=${harness//@GO@/$(sed -n 's/^go //p' go.mod)} # exactly go.mod's: a cached golang:1.27 can be older
 
 # ---------- scenarios ----------
 on_all() { # on_all <vms> <command>: in parallel; fails if any fails
