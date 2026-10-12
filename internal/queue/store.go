@@ -180,3 +180,24 @@ func (s *Store) Redrive(ctx context.Context, owner, id uuid.UUID) (Job, error) {
 	}
 	return job, ErrNotDead
 }
+
+// Purge deletes up to limit finished jobs (succeeded, dead or cancelled) that finished more
+// than olderThan ago, oldest first, with their attempts and cron tick rows. Their idempotency
+// keys go with them: a key can be reused once its job is purged. A redriven job is unfinished
+// again (finished_at is NULL), so it is safe until it finishes. Returns jobs deleted.
+func (s *Store) Purge(ctx context.Context, olderThan time.Duration, limit int) (int, error) {
+	tag, err := s.db.Exec(ctx, `
+		WITH doomed AS (
+		  SELECT id FROM jobs
+		  WHERE finished_at < now() - make_interval(secs => $1)
+		    AND state IN ('succeeded', 'dead', 'cancelled')
+		  ORDER BY finished_at LIMIT $2
+		  FOR UPDATE SKIP LOCKED
+		), attempts AS (
+		  DELETE FROM job_attempts WHERE job_id IN (SELECT id FROM doomed)
+		), ticks AS (
+		  DELETE FROM schedule_ticks WHERE job_id IN (SELECT id FROM doomed)
+		)
+		DELETE FROM jobs WHERE id IN (SELECT id FROM doomed)`, olderThan.Seconds(), limit)
+	return int(tag.RowsAffected()), err
+}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 	_ "time/tzdata" // cron time zones must work even in images without zoneinfo
@@ -37,7 +38,13 @@ func main() {
 	}
 	defer pool.Close()
 
-	s := scheduler.New(pool, log, scheduler.Config{})
+	// RETENTION_DAYS: finished jobs are deleted this many days after they finish; 0 keeps them.
+	days, err := strconv.Atoi(cmp.Or(os.Getenv("RETENTION_DAYS"), "30"))
+	if err != nil || days < 0 {
+		log.Error("RETENTION_DAYS must be a whole number of days, 0 or more")
+		os.Exit(1)
+	}
+	s := scheduler.New(pool, log, scheduler.Config{Retention: time.Duration(days) * 24 * time.Hour})
 	done := make(chan struct{})
 	go func() { s.Run(ctx); close(done) }()
 

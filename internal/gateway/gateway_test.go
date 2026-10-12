@@ -33,7 +33,7 @@ func setup(t *testing.T) (*httptest.Server, *seen, ed25519.PrivateKey) {
 		io.Copy(io.Discard, r.Body)
 	}))
 	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("auth:" + r.URL.Path))
+		w.Write([]byte("auth:" + r.URL.Path + "|" + r.Header.Get("Authorization")))
 	}))
 	t.Cleanup(jobs.Close)
 	t.Cleanup(authSrv.Close)
@@ -116,8 +116,26 @@ func TestGatewayLimits(t *testing.T) {
 
 func TestGatewayRoutes(t *testing.T) {
 	gw, _, _ := setup(t)
-	if code, body := call(t, gw, "POST", "/v1/auth/login", nil, "{}"); code != 200 || body != "auth:/v1/auth/login" {
+	if code, body := call(t, gw, "POST", "/v1/auth/login", nil, "{}"); code != 200 || body != "auth:/v1/auth/login|" {
 		t.Errorf("login route: %d %q (no token needed)", code, body)
+	}
+	// Account routes need the caller: a browser session's cookie becomes the bearer token,
+	// with the same Origin check as any other write.
+	gw, _, key := setup(t)
+	var session map[string]string
+	for _, r := range [][2]string{{"GET", "/v1/auth/me"}, {"POST", "/v1/auth/password"}, {"GET", "/v1/auth/users"}, {"DELETE", "/v1/auth/users/x"}} {
+		tok, _ := authn.Sign(key, authn.Identity{Owner: uuid.NewV7()}, time.Hour) // one user per route: the test burst is 3
+		session = map[string]string{"Cookie": auth.CookieName + "=" + tok, "Origin": origin}
+		if code, body := call(t, gw, r[0], r[1], session, "{}"); code != 200 || body != "auth:"+r[1]+"|Bearer "+tok {
+			t.Errorf("%s %s with a session: %d %q", r[0], r[1], code, body)
+		}
+		if code, _ := call(t, gw, r[0], r[1], nil, "{}"); code != http.StatusUnauthorized {
+			t.Errorf("%s %s without a session: %d, want 401", r[0], r[1], code)
+		}
+	}
+	session["Origin"] = "https://evil.example"
+	if code, _ := call(t, gw, "POST", "/v1/auth/password", session, "{}"); code != http.StatusForbidden {
+		t.Errorf("password change from another origin: %d, want 403", code)
 	}
 	if code, body := call(t, gw, "GET", "/", nil, ""); code != 200 || body != "dashboard" {
 		t.Errorf("dashboard: %d %q", code, body)

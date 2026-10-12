@@ -153,3 +153,102 @@ func TestOnlyAdminsCreateUsers(t *testing.T) {
 	}
 
 }
+
+func send(t *testing.T, srv *httptest.Server, method, path, token, body string) (int, []byte) {
+	t.Helper()
+	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b
+}
+
+func TestMe(t *testing.T) {
+	_, srv := newService(t)
+	_, tok := login(t, srv, "user@example.com", "user-password-12")
+	code, b := send(t, srv, "GET", "/v1/auth/me", tok, "")
+	var u struct {
+		Email string
+		Admin bool
+	}
+	json.Unmarshal(b, &u)
+	if code != http.StatusOK || u.Email != "user@example.com" || u.Admin {
+		t.Errorf("me: %d %s", code, b)
+	}
+	if code, _ := send(t, srv, "GET", "/v1/auth/me", "", ""); code != http.StatusUnauthorized {
+		t.Errorf("me without a token: %d, want 401", code)
+	}
+}
+
+func TestChangePassword(t *testing.T) {
+	_, srv := newService(t)
+	_, tok := login(t, srv, "user@example.com", "user-password-12")
+	for _, c := range []struct {
+		name, body string
+		want       int
+	}{
+		{"wrong current", `{"current":"not-my-password","new":"a-brand-new-password"}`, http.StatusForbidden},
+		{"too short", `{"current":"user-password-12","new":"short"}`, http.StatusBadRequest},
+		{"right", `{"current":"user-password-12","new":"a-brand-new-password"}`, http.StatusNoContent},
+	} {
+		if code, b := send(t, srv, "POST", "/v1/auth/password", tok, c.body); code != c.want {
+			t.Errorf("%s: %d %s, want %d", c.name, code, b, c.want)
+		}
+	}
+	if code, _ := send(t, srv, "POST", "/v1/auth/password", "", `{"current":"x","new":"a-brand-new-password"}`); code != http.StatusUnauthorized {
+		t.Errorf("no token: %d, want 401", code)
+	}
+	if code, _ := login(t, srv, "user@example.com", "user-password-12"); code != http.StatusUnauthorized {
+		t.Errorf("old password still works: %d", code)
+	}
+	if code, _ := login(t, srv, "user@example.com", "a-brand-new-password"); code != http.StatusOK {
+		t.Errorf("new password refused: %d", code)
+	}
+}
+
+func TestListAndDeleteUsers(t *testing.T) {
+	_, srv := newService(t)
+	_, adminTok := login(t, srv, "admin@example.com", "admin-password-1")
+	_, userTok := login(t, srv, "user@example.com", "user-password-12")
+
+	if code, _ := send(t, srv, "GET", "/v1/auth/users", userTok, ""); code != http.StatusForbidden {
+		t.Errorf("non-admin list: %d, want 403", code)
+	}
+	code, b := send(t, srv, "GET", "/v1/auth/users", adminTok, "")
+	var list struct {
+		Users []struct {
+			ID    string
+			Email string
+		}
+	}
+	json.Unmarshal(b, &list)
+	if code != http.StatusOK || len(list.Users) != 2 {
+		t.Fatalf("list: %d %s", code, b)
+	}
+	ids := map[string]string{}
+	for _, u := range list.Users {
+		ids[u.Email] = u.ID
+	}
+
+	if code, _ := send(t, srv, "DELETE", "/v1/auth/users/"+ids["admin@example.com"], userTok, ""); code != http.StatusForbidden {
+		t.Errorf("non-admin delete: %d, want 403", code)
+	}
+	if code, _ := send(t, srv, "DELETE", "/v1/auth/users/"+ids["admin@example.com"], adminTok, ""); code != http.StatusConflict {
+		t.Errorf("admin deleting itself: %d, want 409", code)
+	}
+	if code, _ := send(t, srv, "DELETE", "/v1/auth/users/"+ids["user@example.com"], adminTok, ""); code != http.StatusNoContent {
+		t.Errorf("delete: %d, want 204", code)
+	}
+	if code, _ := send(t, srv, "DELETE", "/v1/auth/users/"+ids["user@example.com"], adminTok, ""); code != http.StatusNotFound {
+		t.Errorf("delete again: %d, want 404", code)
+	}
+	if code, _ := login(t, srv, "user@example.com", "user-password-12"); code != http.StatusUnauthorized {
+		t.Errorf("deleted user can still sign in: %d", code)
+	}
+}

@@ -27,6 +27,10 @@ async function call<T>(method: string, path: string, body?: unknown, headers: Re
 export const get = <T,>(path: string) => call<T>("GET", path);
 export const post = <T,>(path: string, body?: unknown, headers?: Record<string, string>) =>
   call<T>("POST", path, body ?? {}, headers);
+export const del = (path: string) => call<null>("DELETE", path);
+
+/** The signed-in user (GET /v1/auth/me). */
+export type Me = { id: string; email: string; admin: boolean };
 
 /** usePoll fetches path now and every 2 s, keeping the last good value. */
 export function usePoll<T>(path: string | null) {

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LeaderBadge from "./lib/leader";
+import SessionMenu from "./lib/session";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -23,6 +24,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <Link href="/schedules/">Schedules</Link>
           </nav>
           <LeaderBadge />
+          <SessionMenu />
         </header>
         <main>{children}</main>
       </body>

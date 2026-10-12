@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -235,5 +236,65 @@ func TestListKeysetPagination(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("page order: got %v, want %v", got, want)
 		}
+	}
+}
+
+func TestPurge(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := t.Context()
+	owner := uuid.NewV7()
+	submit := func(key string) uuid.UUID {
+		j, _, err := s.Submit(ctx, newJob(owner, key, `{"k":"`+key+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j.ID
+	}
+	age := func(id uuid.UUID, state string, days int) {
+		setState(t, pool, id, state)
+		if _, err := pool.Exec(ctx, `UPDATE jobs SET finished_at = now() - make_interval(days => $2) WHERE id = $1`, id, days); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldOK, oldDead, oldCancelled, recent, running, waiting := submit("a"), submit("b"), submit("c"), submit("d"), submit("e"), submit("f")
+	age(oldOK, "succeeded", 40)
+	age(oldDead, "dead", 40)
+	age(oldCancelled, "cancelled", 31)
+	age(recent, "succeeded", 1)
+	setState(t, pool, running, "running")
+
+	// Rows that reference a purged job: an attempt and a cron tick.
+	if _, err := pool.Exec(ctx, `INSERT INTO job_attempts (job_id, attempt, lease_token, node_id, started_at)
+		VALUES ($1, 1, gen_random_uuid(), gen_random_uuid(), now())`, oldOK); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := ParseCron("* * * * *", "UTC")
+	sc, err := s.CreateSchedule(ctx, owner, "every-minute", c, "* * * * *", "UTC", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO schedule_ticks (schedule_id, tick_at, job_id) VALUES ($1, now(), $2)`, sc.ID, oldOK); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := s.Purge(ctx, 30*24*time.Hour, 2); err != nil || n != 2 {
+		t.Fatalf("first batch: purged %d, %v; want 2 (the limit)", n, err)
+	}
+	if n, err := s.Purge(ctx, 30*24*time.Hour, 100); err != nil || n != 1 {
+		t.Fatalf("second batch: purged %d, %v; want the 1 left", n, err)
+	}
+	for id, want := range map[uuid.UUID]bool{oldOK: false, oldDead: false, oldCancelled: false, recent: true, running: true, waiting: true} {
+		if _, err := s.Get(ctx, owner, id); (err == nil) != want {
+			t.Errorf("job %v: kept = %v, want %v", id, err == nil, want)
+		}
+	}
+	var refs int
+	pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM job_attempts) + (SELECT count(*) FROM schedule_ticks)`).Scan(&refs)
+	if refs != 0 {
+		t.Errorf("%d attempt or tick rows still point at purged jobs", refs)
+	}
+	// A purged job's key is free again.
+	if _, created, err := s.Submit(ctx, newJob(owner, "a", `{"k":"a"}`)); err != nil || !created {
+		t.Errorf("resubmit purged key: created = %v, %v; want a new job", created, err)
 	}
 }

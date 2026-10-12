@@ -110,6 +110,7 @@ The response is the job, with `"state":"available"` and status `201 Created`.
 Every submit needs an `Idempotency-Key`: any string of 1 to 200 characters that you choose, unique per job you mean to create. Use something from your own domain, such as `order-1042-shipped`.
 
 - Send the same key with the same body again and you get the **same job back** with `200 OK`. No second job is made. That makes retrying always safe.
+- A key is remembered for as long as its job exists: 30 days after the job finishes ([retention](#retention)), the job is deleted and the key can be used again.
 - Send the same key with a **different** body and you get `409 Conflict`.
 - If you get `503`, the outcome is unknown: retry with the **same** key. You will either get the job that was created or it will be created now.
 - Keys starting with `cron:` are reserved for schedules.
@@ -165,6 +166,10 @@ Cancelling moves an `available` or `running` job to `cancelled`.
 | `succeeded` | Done. |
 | `dead` | Gave up: used all `max_attempts`, or the handler returned a permanent error. |
 | `cancelled` | You cancelled it. |
+
+### Retention
+
+Finished jobs (`succeeded`, `dead` or `cancelled`) are deleted **30 days after they finish**, with their attempt history, so the database doesn't grow forever. Jobs that are waiting or running are never deleted, and a redriven job counts from when it finishes again. The leader scheduler does it, a batch at a time. Change the period with `RETENTION_DAYS` on the `scheduler` service; `0` keeps every job forever.
 
 What happens on failure:
 
@@ -365,8 +370,12 @@ Open https://tq.aniruddha81.tech and sign in. It refreshes every 2 seconds.
 | **Dead** | Dead-lettered jobs, each with a **Redrive** button |
 | **Queues** | Counts per queue and state |
 | **Workers** | Every worker per cloud: queues, types, version, running jobs, live or not |
-| **Schedules** | Your schedules, next tick, pause and resume |
-| Header | The current leader scheduler and its epoch |
+| **Schedules** | Your schedules and their next tick; pause, resume and delete them; a form to create one, with cron examples and the same job fields as New job |
+| **Account** | Your email and role; change your password |
+| **Users** (admins only) | Every user; add a user or an admin; delete a user |
+| Header | The current leader scheduler and its epoch; who you're signed in as; Sign out |
+
+The Jobs page shows 100 jobs at a time, newest first; **Older →** and **← Newer** page through the rest.
 
 ### Grafana, Prometheus and Mailpit
 
@@ -419,7 +428,16 @@ Then, with the tunnel up:
 
 ## 10. Users and admins
 
-Only an admin can create users. Passwords need at least 12 characters.
+In the browser: **Account** (top right) changes your password; admins also get **Users**, to list, add and delete users.
+
+Change your own password. You need the current one, so a stolen session can't lock you out:
+
+```sh
+curl $G/v1/auth/password -H "$H" -d '{"current":"<current password>","new":"at-least-12-chars"}'   # 204
+curl $G/v1/auth/me -H "$H"                                                                        # who am I
+```
+
+Only an admin can create, list or delete users. Passwords need at least 12 characters.
 
 ```sh
 ADMIN_TOKEN=$(curl -s $G/v1/auth/login -d '{"email":"admin@example.com","password":"<admin password>"}' | jq -r .token)
@@ -433,6 +451,13 @@ curl $G/v1/auth/users -H "Authorization: Bearer $ADMIN_TOKEN" \
 ```
 
 `201` returns the new user's ID. `403` means the token isn't an admin's, `409` means the email is taken.
+
+```sh
+curl $G/v1/auth/users -H "Authorization: Bearer $ADMIN_TOKEN"                     # list
+curl -X DELETE $G/v1/auth/users/<id> -H "Authorization: Bearer $ADMIN_TOKEN"      # 204
+```
+
+A deleted user can't sign in again, but a session they already have keeps working until its token expires (at most 60 minutes). An admin can't delete their own account. Their jobs stay until retention removes them.
 
 Seed users come from the `auth` service's `SEED_USERS` variable: `email:password[:admin],...`. They are created at startup if they don't exist yet. In production Terraform sets it, with random passwords.
 
@@ -492,7 +517,11 @@ All routes go through the gateway and need a token, except login and logout. Eac
 | --- | --- | --- |
 | `POST` | `/v1/auth/login` | `{email, password}` → `{token, expires_at}` and the session cookie |
 | `POST` | `/v1/auth/logout` | Clears the session cookie |
+| `GET` | `/v1/auth/me` | The caller: `{id, email, admin, created_at}` |
+| `POST` | `/v1/auth/password` | `{current, new}`: change your password |
 | `POST` | `/v1/auth/users` | Admin only: `{email, password, admin?}` |
+| `GET` | `/v1/auth/users` | Admin only: every user |
+| `DELETE` | `/v1/auth/users/{id}` | Admin only: delete a user |
 | `POST` | `/v1/jobs` | Submit (needs `Idempotency-Key`) |
 | `GET` | `/v1/jobs` | List: `?state=&queue=&limit=&after=` |
 | `GET` | `/v1/jobs/{id}` | Get one job |
@@ -517,7 +546,7 @@ All routes go through the gateway and need a token, except login and logout. Eac
 | `204` | Deleted, or logged out |
 | `400` | Invalid input; the message says which field |
 | `401` | Missing, expired or invalid token |
-| `403` | Not an admin |
+| `403` | Not an admin, the current password is wrong, or a browser request from another site |
 | `404` | No such job or schedule, or it belongs to someone else |
 | `409` | Key reused with a different body, name taken, or the job is in the wrong state |
 | `413` | Body over 64 KB |

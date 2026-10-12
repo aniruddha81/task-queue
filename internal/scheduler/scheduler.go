@@ -27,7 +27,7 @@ var ErrNotLeader = errors.New("not the leader")
 
 var (
 	choreChanges = promauto.NewCounterVec(prometheus.CounterOpts{Name: "scheduler_chore_changes_total",
-		Help: "Rows changed by leader chores: reap = expired leases, cron = ticks created."}, []string{"chore"})
+		Help: "Rows changed by leader chores: reap = expired leases, cron = ticks created, purge = finished jobs deleted."}, []string{"chore"})
 	leaderEpoch = promauto.NewGauge(prometheus.GaugeOpts{Name: "scheduler_leader_epoch",
 		Help: "The epoch this process leads, or 0 when it isn't the leader."})
 )
@@ -37,6 +37,7 @@ type Config struct {
 	Every     time.Duration // pause between chore rounds; default 1 s
 	TickBatch int           // cron ticks per round; default 500
 	ReapBatch int           // expired leases per round; default 500
+	Retention time.Duration // finished jobs older than this are deleted; 0: kept forever
 }
 
 type Scheduler struct {
@@ -141,6 +142,12 @@ func (s *Scheduler) lead(ctx context.Context, epoch int64) {
 		}{
 			{"reap", func(ctx context.Context, st *queue.Store) (int, error) { return st.Reap(ctx, s.cfg.ReapBatch) }},
 			{"cron", func(ctx context.Context, st *queue.Store) (int, error) { return st.TickSchedules(ctx, s.cfg.TickBatch) }},
+			{"purge", func(ctx context.Context, st *queue.Store) (int, error) {
+				if s.cfg.Retention <= 0 {
+					return 0, nil
+				}
+				return st.Purge(ctx, s.cfg.Retention, s.cfg.ReapBatch)
+			}},
 		} {
 			n, err := s.chore(ctx, epoch, c.name, c.run)
 			if errors.Is(err, ErrNotLeader) {

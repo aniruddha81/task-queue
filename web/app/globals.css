@@ -67,3 +67,7 @@ form.job details { border: 1px solid var(--line); border-radius: 6px; padding: 8
 form.job summary { cursor: pointer; color: var(--muted); }
 form.job .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 12px; }
 form.job button[type="submit"] { justify-self: start; padding: 6px 16px; }
+.session { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+form.job input[type="checkbox"] { justify-self: start; }
+.ok-msg { color: var(--ok); margin: 8px 0; }
+.pager { display: flex; gap: 12px; margin-top: 12px; }

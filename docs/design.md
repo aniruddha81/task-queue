@@ -315,7 +315,7 @@ These are scope decisions, stated openly:
 - **Workers are trusted.** A worker with a valid certificate can report success without doing the work. Effects at destinations that don't check the effect key are at-least-once.
 - **Rate limits are per gateway,** so two gateways allow up to twice the limit.
 - **The throughput ceiling is the commit path:** 101 jobs/s in production with synchronous replication, on the current layout ([section 3](#3-postgres-as-the-queue-skip-locked-instead-of-a-broker)).
-- **There are no backups beyond the standby,** and jobs are never purged, so idempotency keys never expire. The data is disposable by design.
+- **There are no backups beyond the standby.** The data is disposable by design. Finished jobs are deleted 30 days after they finish (`RETENTION_DAYS`), and their idempotency keys with them.
 - **`ops-a`** (the harness, sinks and monitoring) is test infrastructure and is never faulted.
 
 ---
