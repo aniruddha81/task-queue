@@ -223,6 +223,7 @@ docs/results/     measurements and checks (e.g. cloud accounts)
 ## Docs
 
 - [docs/design.md](docs/design.md): the design and its trade-offs: why `SKIP LOCKED` and not a broker, effect keys, fencing, one clock, synchronous-when-possible replication, zero-downtime deploys, the fault model and the known limits
+- [docs/decisions/](docs/decisions/): one short page per major decision, with its cost and evidence
 - [docs/journey.md](docs/journey.md): how it was built so far, week by week, and what each step taught
 - [full_plan(v4).md](full_plan(v4).md): the design, the guarantees, and the week-by-week plan
 - [deployment_plan.md](deployment_plan.md): CI/CD and zero-downtime deploys

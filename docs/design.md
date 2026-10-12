@@ -320,4 +320,4 @@ These are scope decisions, stated openly:
 
 ---
 
-**Further reading:** the plan and the guarantees in full, in [full_plan(v4).md](../full_plan(v4).md); the release and availability design, in [deployment_plan.md](../deployment_plan.md); how each week was built, in [journey.md](journey.md); every bug and what it taught, in [bugs.md](bugs.md); and the raw evidence, in [results/](results/).
+**Further reading:** one page per decision, in [decisions/](decisions/); the plan and the guarantees in full, in [full_plan(v4).md](../full_plan(v4).md); the release and availability design, in [deployment_plan.md](../deployment_plan.md); how each week was built, in [journey.md](journey.md); every bug and what it taught, in [bugs.md](bugs.md); and the raw evidence, in [results/](results/).
