@@ -2,7 +2,7 @@
 
 A distributed job scheduler in Go, running across AWS and Azure. It never loses a job it has acknowledged, and it never applies a job's effect twice: through crashes, pauses, network splits and the loss of a whole cloud. An automated chaos test checks every guarantee.
 
-It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker.
+It is built on PostgreSQL with `FOR UPDATE SKIP LOCKED`, with no message broker. The [design doc](docs/design.md) explains why, and what each guarantee costs.
 
 > **Status:** early. Jobs are submitted, run by workers through `dispatch` with fenced leases, retried with backoff, recovered by the lease reaper when a worker dies, and dead-lettered after `max_attempts` (redrive brings them back). Cron schedules create exactly one job per tick, run by an elected, epoch-fenced leader scheduler. Everything runs over TLS behind an authenticating gateway, and the chaos test checks every guarantee while killing, pausing and partitioning the stack. A dashboard and Grafana show it live, and PostgreSQL fails over automatically (Patroni) with zero acknowledged jobs lost. It runs across AWS Mumbai and Azure Central India. The [Act 1 experiments](docs/results/act1-fragility.md) showed safety holding through every single failure, and availability needing both clouds and the link between them. Since week 12 every stateless service runs in both clouds behind Traffic Manager, and each release is deployed one VM at a time, with each gateway drained first, while an external probe that never retries checks for failed requests. Since week 13 the database runs in both clouds too: Patroni fails over automatically in either direction, with etcd on three sites so only a majority can promote, and the [go-live gate](docs/results/act2-database.md) lost no acknowledged job through crashes of either primary, a cut between the clouds, the witness lost, and both database VMs replaced under load. Since week 14 it is in production, running 24/7: [twelve faults under the probe](docs/results/act2-resilience.md), including stopping a whole cloud, all passed the checker, with failed requests confined to the first 43 s of a fault; 16 releases in a row deployed with zero failed requests.
 
@@ -222,6 +222,7 @@ docs/results/     measurements and checks (e.g. cloud accounts)
 
 ## Docs
 
+- [docs/design.md](docs/design.md): the design and its trade-offs: why `SKIP LOCKED` and not a broker, effect keys, fencing, one clock, synchronous-when-possible replication, zero-downtime deploys, the fault model and the known limits
 - [docs/journey.md](docs/journey.md): how it was built so far, week by week, and what each step taught
 - [full_plan(v4).md](full_plan(v4).md): the design, the guarantees, and the week-by-week plan
 - [deployment_plan.md](deployment_plan.md): CI/CD and zero-downtime deploys
