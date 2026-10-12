@@ -78,6 +78,11 @@ variable "admin_ssh_public_key" {
   default     = ""
 }
 
+variable "custom_domain" {
+  description = "A CNAME to the Traffic Manager name, served with its own Let's Encrypt certificate. Empty: none."
+  default     = "tq.aniruddha81.tech"
+}
+
 variable "github_repo" {
   default = "aniruddha81/task-queue"
 }
@@ -155,8 +160,8 @@ locals {
     contains(v.roles, "gateway") ? {
       AUTH_URL      = join(",", [for m in local.near[n].auth : "https://${m}:8083"]) # nearest first;
       JOBS_URL      = join(",", [for m in local.near[n].jobs : "https://${m}:8080"]) # the rest are its twins
-      PUBLIC_ORIGIN = "https://${local.p.public_fqdn}"
-      ACME_DOMAIN   = local.p.public_fqdn
+      PUBLIC_ORIGIN = join(",", [for d in compact([local.p.public_fqdn, var.custom_domain]) : "https://${d}"])
+      ACME_DOMAIN   = join(",", compact([local.p.public_fqdn, var.custom_domain]))
     } : {},
     contains(v.roles, "auth") ? {
       AUTH_DB_URL     = local.db_url.auth

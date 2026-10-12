@@ -2,9 +2,10 @@
 //
 // Environment: AUTH_URL, JOBS_URL (https upstreams; comma-separated, nearest first, the
 // rest tried when one is down), PUBLIC_ORIGIN (e.g.
-// https://localhost:8443), STATIC_DIR (the dashboard export), RATE_LIMIT and RATE_BURST
-// (per user; defaults 20/s and 40), TLS_DIR. In the cloud, ACME_DOMAIN (the Traffic
-// Manager name) gets a Let's Encrypt certificate, cached in ACME_CACHE (default /acme).
+// https://localhost:8443; comma-separated when the dashboard has several names), STATIC_DIR
+// (the dashboard export), RATE_LIMIT and RATE_BURST (per user; defaults 20/s and 40),
+// TLS_DIR. In the cloud, each name in ACME_DOMAIN (comma-separated: the Traffic Manager name
+// and the custom domain) gets a Let's Encrypt certificate, cached in ACME_CACHE (default /acme).
 package main
 
 import (
@@ -18,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -61,9 +63,9 @@ func main() {
 
 	h := gateway.New(gateway.Config{
 		Auth: authURLs, Jobs: jobsURLs, Transport: client.Transport, Verifier: verifier,
-		Origin: os.Getenv("PUBLIC_ORIGIN"),
-		Static: http.FileServer(http.Dir(cmp.Or(os.Getenv("STATIC_DIR"), "/static"))),
-		Rate:   rate.Limit(limit), Burst: burst, Log: log,
+		Origins: names(os.Getenv("PUBLIC_ORIGIN")),
+		Static:  http.FileServer(http.Dir(cmp.Or(os.Getenv("STATIC_DIR"), "/static"))),
+		Rate:    rate.Limit(limit), Burst: burst, Log: log,
 	})
 	mux := http.NewServeMux()
 	// Ready only when it could serve through its own VM: Traffic Manager returns a gateway in
@@ -71,35 +73,47 @@ func main() {
 	// reach the database (the twin's upstreams are only for failover).
 	serve.Health(mux, verifier.Ready, upstreamReady(client, jobsURLs[0]), upstreamReady(client, authURLs[0]))
 	mux.Handle("/", h)
-	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8443"), mux, publicTLS(certs, os.Getenv("ACME_DOMAIN"), cache)); err != nil {
+	if err := serve.Run(ctx, log, cmp.Or(os.Getenv("ADDR"), ":8443"), mux, publicTLS(certs, names(os.Getenv("ACME_DOMAIN")), cache)); err != nil {
 		fail("serve", err)
 	}
 }
 
-// publicTLS serves the project certificate, or with a domain, a Let's Encrypt certificate
-// for it, obtained and renewed through TLS-ALPN-01 on this same port. Other server names
+// publicTLS serves the project certificate, or with domains, a Let's Encrypt certificate
+// for each, obtained and renewed through TLS-ALPN-01 on this same port. Other server names
 // (Traffic Manager's health probe, a client dialing the IP) still get the project
-// certificate, so the gateway answers before its public certificate exists.
-func publicTLS(certs *tlsconf.Bundle, domain string, cache autocert.Cache) *tls.Config {
+// certificate, so the gateway answers before its public certificates exist.
+func publicTLS(certs *tlsconf.Bundle, domains []string, cache autocert.Cache) *tls.Config {
 	cfg := certs.Public()
-	if domain == "" {
+	if len(domains) == 0 {
 		return cfg
 	}
 	m := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
-		HostPolicy: autocert.HostWhitelist(domain),
+		HostPolicy: autocert.HostWhitelist(domains...),
 		Cache:      cache,
 	}
 	acme := m.TLSConfig()
 	acme.MinVersion = tls.VersionTLS12
 	project := cfg.Certificates[0]
 	acme.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		if hello.ServerName != domain {
+		if !slices.Contains(domains, hello.ServerName) {
 			return &project, nil
 		}
 		return m.GetCertificate(hello)
 	}
 	return acme
+}
+
+// names splits a comma-separated list, dropping blanks: an empty entry must never match
+// (a request with no Origin header, or a TLS hello with no server name).
+func names(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // urlList parses a comma-separated list of upstream URLs, nearest first.

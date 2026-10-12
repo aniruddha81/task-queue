@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,7 +28,7 @@ type Config struct {
 	Auth, Jobs []*url.URL        // upstreams, nearest first; the rest are tried when one is down
 	Transport  http.RoundTripper // mTLS to the upstreams
 	Verifier   *authn.Verifier
-	Origin     string       // the dashboard's origin, e.g. https://localhost:8443; cookie writes must come from it
+	Origins    []string     // the dashboard's origins, e.g. https://localhost:8443; cookie writes must come from one
 	Static     http.Handler // the dashboard
 	Rate       rate.Limit   // requests per second per user
 	Burst      int
@@ -83,7 +84,7 @@ func (g *gateway) authed(next http.Handler) http.Handler {
 			if c, err := r.Cookie(auth.CookieName); err == nil {
 				// A browser session. SameSite=Strict already stops cross-site sends; the
 				// Origin check is a second guard for anything that changes state.
-				if !safeMethod(r.Method) && r.Header.Get("Origin") != g.cfg.Origin {
+				if o := r.Header.Get("Origin"); !safeMethod(r.Method) && (o == "" || !slices.Contains(g.cfg.Origins, o)) {
 					writeError(w, http.StatusForbidden, "cross-origin request refused")
 					return
 				}

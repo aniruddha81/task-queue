@@ -95,8 +95,12 @@ run "act2" { # the default role map: week 13
     error_message = "rollout.sh knows the Traffic Manager profile, to drain gateways"
   }
   assert {
-    condition     = strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "ACME_DOMAIN='tq-test.trafficmanager.net'")
-    error_message = "the gateway gets a certificate for the public name"
+    condition     = strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "ACME_DOMAIN='tq-test.trafficmanager.net,tq.aniruddha81.tech'")
+    error_message = "the gateway gets a certificate for the public name and the custom domain"
+  }
+  assert {
+    condition     = strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "PUBLIC_ORIGIN='https://tq-test.trafficmanager.net,https://tq.aniruddha81.tech'")
+    error_message = "the dashboard accepts cookie writes from both names"
   }
   assert {
     condition     = strcontains(aws_ssm_parameter.file["work-a/tq.env"].value, "DISPATCHERS='https://svc-a:8081,https://svc-z:8081'")
