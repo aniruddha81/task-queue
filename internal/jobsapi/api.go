@@ -5,6 +5,7 @@
 //	GET  /v1/jobs/{id}         get
 //	POST /v1/jobs/{id}/cancel  cancel
 //	POST /v1/jobs/{id}/redrive retry a dead job with a fresh attempt budget
+//	POST /v1/jobs/redrive      redrive every dead job, or one queue's ({"queue": "..."}), up to 1000 a call
 //
 // and the schedule routes in schedules.go.
 package jobsapi
@@ -48,6 +49,7 @@ func New(store *queue.Store, auth *authn.Verifier, log *slog.Logger) http.Handle
 	mux.HandleFunc("GET /v1/jobs/{id}", a.authed(a.get))
 	mux.HandleFunc("POST /v1/jobs/{id}/cancel", a.authed(a.cancel))
 	mux.HandleFunc("POST /v1/jobs/{id}/redrive", a.authed(a.redrive))
+	mux.HandleFunc("POST /v1/jobs/redrive", a.authed(a.redriveAll))
 	a.scheduleRoutes(mux)
 	mux.HandleFunc("GET /v1/jobs/{id}/attempts", a.authed(a.attempts))
 	mux.HandleFunc("GET /v1/queues", a.authed(a.queues))
@@ -163,6 +165,27 @@ func (a *api) redrive(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
 	}
 	job, err := pgretry.Do(r.Context(), func(ctx context.Context) (queue.Job, error) { return a.store.Redrive(ctx, owner, id) })
 	a.respond(w, job, err)
+}
+
+func (a *api) redriveAll(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {
+	var b struct {
+		Queue string `json:"queue"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&b); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if b.Queue != "" && !queue.ValidName(b.Queue) {
+		writeError(w, http.StatusBadRequest, "unknown queue name")
+		return
+	}
+	n, err := pgretry.Do(r.Context(), func(ctx context.Context) (int, error) { return a.store.RedriveAll(ctx, owner, b.Queue, 1000) })
+	if err != nil {
+		a.log.Error("redrive all", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"redriven": n})
 }
 
 func (a *api) attempts(w http.ResponseWriter, r *http.Request, owner uuid.UUID) {

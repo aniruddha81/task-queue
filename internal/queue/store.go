@@ -201,3 +201,14 @@ func (s *Store) Purge(ctx context.Context, olderThan time.Duration, limit int) (
 		DELETE FROM jobs WHERE id IN (SELECT id FROM doomed)`, olderThan.Seconds(), limit)
 	return int(tag.RowsAffected()), err
 }
+
+// RedriveAll redrives up to limit of the owner's dead jobs, in one queue or all ("" = all),
+// exactly as Redrive does one. Returns how many.
+func (s *Store) RedriveAll(ctx context.Context, owner uuid.UUID, queue string, limit int) (int, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE jobs SET state = 'available', run_at = now(), finished_at = NULL, updated_at = now(),
+		  max_attempts = attempt + COALESCE((request->>'max_attempts')::int, 5)
+		WHERE id IN (SELECT id FROM jobs WHERE owner_id = $1 AND state = 'dead' AND ($2 = '' OR queue = $2)
+		             ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED)`, owner, queue, limit)
+	return int(tag.RowsAffected()), err
+}

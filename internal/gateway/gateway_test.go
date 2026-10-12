@@ -123,7 +123,7 @@ func TestGatewayRoutes(t *testing.T) {
 	// with the same Origin check as any other write.
 	gw, _, key := setup(t)
 	var session map[string]string
-	for _, r := range [][2]string{{"GET", "/v1/auth/me"}, {"POST", "/v1/auth/password"}, {"GET", "/v1/auth/users"}, {"DELETE", "/v1/auth/users/x"}} {
+	for _, r := range [][2]string{{"GET", "/v1/auth/me"}, {"POST", "/v1/auth/password"}, {"GET", "/v1/auth/users"}, {"DELETE", "/v1/auth/users/x"}, {"POST", "/v1/auth/keys"}, {"DELETE", "/v1/auth/keys/x"}} {
 		tok, _ := authn.Sign(key, authn.Identity{Owner: uuid.NewV7()}, time.Hour) // one user per route: the test burst is 3
 		session = map[string]string{"Cookie": auth.CookieName + "=" + tok, "Origin": origin}
 		if code, body := call(t, gw, r[0], r[1], session, "{}"); code != 200 || body != "auth:"+r[1]+"|Bearer "+tok {
@@ -136,6 +136,10 @@ func TestGatewayRoutes(t *testing.T) {
 	session["Origin"] = "https://evil.example"
 	if code, _ := call(t, gw, "POST", "/v1/auth/password", session, "{}"); code != http.StatusForbidden {
 		t.Errorf("password change from another origin: %d, want 403", code)
+	}
+	// The key exchange carries the key as its bearer token, untouched.
+	if code, body := call(t, gw, "POST", "/v1/auth/token", map[string]string{"Authorization": "Bearer tq_k"}, ""); code != 200 || body != "auth:/v1/auth/token|Bearer tq_k" {
+		t.Errorf("key exchange: %d %q", code, body)
 	}
 	if code, body := call(t, gw, "GET", "/", nil, ""); code != 200 || body != "dashboard" {
 		t.Errorf("dashboard: %d %q", code, body)

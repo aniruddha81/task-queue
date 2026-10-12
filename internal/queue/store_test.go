@@ -298,3 +298,40 @@ func TestPurge(t *testing.T) {
 		t.Errorf("resubmit purged key: created = %v, %v; want a new job", created, err)
 	}
 }
+
+func TestRedriveAll(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := t.Context()
+	me, other := uuid.NewV7(), uuid.NewV7()
+	add := func(owner uuid.UUID, key, queue, state string) uuid.UUID {
+		j := newJob(owner, key, `{"k":"`+key+`"}`)
+		j.Queue = queue
+		job, _, err := s.Submit(ctx, j)
+		if err != nil {
+			t.Fatal(err)
+		}
+		setState(t, pool, job.ID, state)
+		return job.ID
+	}
+	d1, d2, d3 := add(me, "a", "default", "dead"), add(me, "b", "default", "dead"), add(me, "c", "mail", "dead")
+	done := add(me, "d", "default", "succeeded")
+	theirs := add(other, "e", "default", "dead")
+
+	if n, err := s.RedriveAll(ctx, me, "default", 1); err != nil || n != 1 {
+		t.Fatalf("limit 1: %d, %v", n, err)
+	}
+	if n, err := s.RedriveAll(ctx, me, "default", 100); err != nil || n != 1 {
+		t.Fatalf("rest of default: %d, %v; want 1", n, err)
+	}
+	if n, err := s.RedriveAll(ctx, me, "", 100); err != nil || n != 1 {
+		t.Fatalf("all queues: %d, %v; want the mail job", n, err)
+	}
+	for id, want := range map[uuid.UUID]string{d1: "available", d2: "available", d3: "available", done: "succeeded"} {
+		if j, _ := s.Get(ctx, me, id); j.State != want || (want == "available" && j.MaxAttempts != 5) {
+			t.Errorf("job %v: %s with max_attempts %d, want %s", id, j.State, j.MaxAttempts, want)
+		}
+	}
+	if j, _ := s.Get(ctx, other, theirs); j.State != "dead" {
+		t.Errorf("another owner's dead job was redriven: %s", j.State)
+	}
+}

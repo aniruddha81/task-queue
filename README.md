@@ -226,7 +226,7 @@ docs/results/     measurements and checks (e.g. cloud accounts)
 
 ## Docs
 
-- [docs/usage.md](docs/usage.md): how to use it: sign in, jobs, schedules, built-in job types, writing a handler, the dashboard, the full API
+- [docs/usage.md](docs/usage.md): how to use it: sign in, jobs, schedules, built-in job types, writing a handler, the dashboard, the full API; the OpenAPI spec is [web/public/openapi.yaml](web/public/openapi.yaml), served at `/openapi.yaml`
 - [docs/design.md](docs/design.md): the design and its trade-offs: why `SKIP LOCKED` and not a broker, effect keys, fencing, one clock, synchronous-when-possible replication, zero-downtime deploys, the fault model and the known limits
 - [docs/decisions/](docs/decisions/): one short page per major decision, with its cost and evidence
 - [docs/results/cost.md](docs/results/cost.md): what it costs, cost per million jobs, and the keep-or-destroy decision

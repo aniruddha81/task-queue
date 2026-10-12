@@ -9,6 +9,10 @@
 //	GET  /v1/auth/users           admin only: every user
 //	DELETE /v1/auth/users/{id}    admin only: the user can't sign in again (a token already
 //	                              issued stays valid until it expires, at most TokenTTL)
+//	POST /v1/auth/keys            create an API key: {name} -> {id, name, key}; the key is shown once
+//	GET  /v1/auth/keys            the caller's keys (never the key itself)
+//	DELETE /v1/auth/keys/{id}     revoke one (tokens already exchanged run out within TokenTTL)
+//	POST /v1/auth/token           exchange a key for a token: Authorization: Bearer tq_... -> {token, expires_at}
 //	GET  /.well-known/jwks.json   public keys
 //	     /internal/acme/{key}     the gateways' shared certificate cache (gateway's mTLS cert only)
 package auth
@@ -16,6 +20,8 @@ package auth
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -68,6 +74,10 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/auth/users", s.createUser)
 	mux.HandleFunc("GET /v1/auth/users", s.listUsers)
 	mux.HandleFunc("DELETE /v1/auth/users/{id}", s.deleteUser)
+	mux.HandleFunc("POST /v1/auth/keys", s.createKey)
+	mux.HandleFunc("GET /v1/auth/keys", s.listKeys)
+	mux.HandleFunc("DELETE /v1/auth/keys/{id}", s.deleteKey)
+	mux.HandleFunc("POST /v1/auth/token", s.exchangeKey)
 	mux.HandleFunc("/internal/acme/{key}", s.acme) // the gateways' shared certificate cache
 	mux.HandleFunc("GET /.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -123,16 +133,22 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
+	s.issue(w, authn.Identity{Owner: id, Admin: admin}, true)
+}
+
+// issue writes a new token as {token, expires_at}, and as the session cookie for a browser.
+func (s *Service) issue(w http.ResponseWriter, id authn.Identity, cookie bool) {
 	expires := time.Now().Add(TokenTTL)
-	tok, err := authn.Sign(s.key, authn.Identity{Owner: id, Admin: admin}, TokenTTL)
+	tok, err := authn.Sign(s.key, id, TokenTTL)
 	if err != nil {
 		s.log.Error("sign", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	// The browser keeps the token in an HttpOnly cookie, out of reach of page scripts.
-	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: tok, Path: "/", MaxAge: int(TokenTTL.Seconds()),
-		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	if cookie { // the browser keeps the token in an HttpOnly cookie, out of reach of page scripts
+		http.SetCookie(w, &http.Cookie{Name: CookieName, Value: tok, Path: "/", MaxAge: int(TokenTTL.Seconds()),
+			HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "expires_at": expires})
 }
 
@@ -349,4 +365,107 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+const keyPrefix = "tq_"
+
+func keyHash(key string) []byte {
+	h := sha256.Sum256([]byte(key))
+	return h[:]
+}
+
+type apiKey struct {
+	ID         uuid.UUID  `json:"id"`
+	Name       string     `json:"name"`
+	Key        string     `json:"key,omitempty"` // only in the response that creates it
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+}
+
+func (s *Service) createKey(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.caller(w, r, false)
+	if !ok {
+		return
+	}
+	var b struct{ Name string }
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if b.Name = strings.TrimSpace(b.Name); b.Name == "" || len(b.Name) > 64 {
+		writeError(w, http.StatusBadRequest, "name must be 1-64 characters")
+		return
+	}
+	k := apiKey{Name: b.Name, Key: keyPrefix + rand.Text() + rand.Text()} // 2 x 130 random bits
+	err := s.db.QueryRow(r.Context(), `INSERT INTO api_keys (user_id, name, hash) VALUES ($1, $2, $3)
+		RETURNING id, created_at`, id.Owner, k.Name, keyHash(k.Key)).Scan(&k.ID, &k.CreatedAt)
+	if err != nil {
+		s.log.Error("create key", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, k)
+}
+
+func (s *Service) listKeys(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.caller(w, r, false)
+	if !ok {
+		return
+	}
+	rows, _ := s.db.Query(r.Context(), `SELECT id, name, created_at, last_used_at FROM api_keys
+		WHERE user_id = $1 ORDER BY created_at`, id.Owner)
+	keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (k apiKey, err error) {
+		err = row.Scan(&k.ID, &k.Name, &k.CreatedAt, &k.LastUsedAt)
+		return k, err
+	})
+	if err != nil {
+		s.log.Error("list keys", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+
+func (s *Service) deleteKey(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.caller(w, r, false)
+	if !ok {
+		return
+	}
+	key, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "key not found")
+		return
+	}
+	tag, err := s.db.Exec(r.Context(), `DELETE FROM api_keys WHERE id = $1 AND user_id = $2`, key, id.Owner)
+	switch {
+	case err == nil && tag.RowsAffected() == 1:
+		w.WriteHeader(http.StatusNoContent)
+	case err == nil:
+		writeError(w, http.StatusNotFound, "key not found") // another user's key is "not found" too
+	default:
+		s.log.Error("delete key", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// exchangeKey trades an API key for a token, with the key owner's identity. No cookie: a
+// key belongs to a program, not a browser.
+func (s *Service) exchangeKey(w http.ResponseWriter, r *http.Request) {
+	key, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || !strings.HasPrefix(key, keyPrefix) {
+		writeError(w, http.StatusUnauthorized, "send the API key as Authorization: Bearer tq_...")
+		return
+	}
+	var id authn.Identity
+	err := s.db.QueryRow(r.Context(), `UPDATE api_keys k SET last_used_at = now() FROM users u
+		WHERE k.hash = $1 AND u.id = k.user_id RETURNING u.id, u.admin`, keyHash(key)).Scan(&id.Owner, &id.Admin)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusUnauthorized, "unknown or revoked API key")
+	case err != nil:
+		s.log.Error("exchange key", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "try again")
+	default:
+		s.issue(w, id, false)
+	}
 }

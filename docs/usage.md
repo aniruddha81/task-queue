@@ -92,6 +92,26 @@ Notes:
 - Browsers get the token as an `HttpOnly` cookie (`tq_session`) instead, so the dashboard needs no copying. `POST /v1/auth/logout` clears it.
 - Each user sees only their own jobs and schedules. Another user's job is `404`, the same as one that doesn't exist.
 
+### For programs: API keys
+
+A service shouldn't sign in with a person's password. Give it an API key instead, and it exchanges the key for a token whenever the last one runs out:
+
+```sh
+# once, signed in as yourself (or in the dashboard: Account → API keys → Create key)
+curl $G/v1/auth/keys -H "$H" -d '{"name":"billing service"}'
+# {"id":"...","name":"billing service","key":"tq_...", ...}   <- shown once: store it as a secret
+
+# in the service, every time it needs a token
+TOKEN=$(curl -s -X POST $G/v1/auth/token -H "Authorization: Bearer tq_..." | jq -r .token)
+```
+
+The token acts as the key's owner and lasts 60 minutes. Only a hash of the key is stored, so a lost key can't be shown again: revoke it and make a new one.
+
+```sh
+curl $G/v1/auth/keys -H "$H"                          # your keys, with when each was last used
+curl -X DELETE $G/v1/auth/keys/<id> -H "$H"           # revoke: no new tokens; issued ones run out within 60 minutes
+```
+
 ## 3. Submit a job
 
 **In the browser:** sign in at https://tq.aniruddha81.tech and open **New job**. Pick a type, and a sample payload is filled in for you. Edit it if you like, then press **Submit job**; the job's page opens so you can watch it run. Priority, run at, max attempts, timeout and cloud are under **More options**. The page makes the Idempotency-Key for you, so pressing Submit twice still creates one job.
@@ -219,6 +239,13 @@ curl -X POST $G/v1/jobs/<id>/redrive -H "$H"
 ```
 
 The job goes back to `available` with a fresh budget of its original `max_attempts`. Attempt numbers keep counting up, so the history stays intact, and the effect key stays the same, so anything an earlier attempt already did isn't done again. Redriving a job that isn't `dead` gives `409`.
+
+Redrive every dead job at once, or just one queue's (up to 1000 per call; call again if there are more):
+
+```sh
+curl -X POST $G/v1/jobs/redrive -H "$H"                              # {"redriven": 12}
+curl -X POST $G/v1/jobs/redrive -H "$H" -d '{"queue":"default"}'
+```
 
 ### Queue counts
 
@@ -367,11 +394,11 @@ Open https://tq.aniruddha81.tech and sign in. It refreshes every 2 seconds.
 | **Jobs** (home) | Your jobs, filterable by state and queue |
 | **New job** | A form to submit a job: type (with a sample payload for each built-in type), queue, payload and every option |
 | **Job** (click an ID) | One job and every attempt: which worker, when, the outcome, and any late result that fencing refused |
-| **Dead** | Dead-lettered jobs, each with a **Redrive** button |
+| **Dead** | Dead-lettered jobs, each with a **Redrive** button, and **Redrive all** |
 | **Queues** | Counts per queue and state |
 | **Workers** | Every worker per cloud: queues, types, version, running jobs, live or not |
 | **Schedules** | Your schedules and their next tick; pause, resume and delete them; a form to create one, with cron examples and the same job fields as New job |
-| **Account** | Your email and role; change your password |
+| **Account** | Your email and role; change your password; create and revoke API keys |
 | **Users** (admins only) | Every user; add a user or an admin; delete a user |
 | Header | The current leader scheduler and its epoch; who you're signed in as; Sign out |
 
@@ -511,13 +538,19 @@ A release that fails any step is rolled back automatically, always with a full r
 
 ## 13. API reference
 
-All routes go through the gateway and need a token, except login and logout. Each user gets 20 requests per second, with bursts up to 40; over that is `429` with a `Retry-After` header. Errors are JSON: `{"error": "..."}`.
+The full machine-readable spec is at **https://tq.aniruddha81.tech/openapi.yaml** (OpenAPI 3.1). Feed it to any OpenAPI client generator, or open it in an OpenAPI viewer.
+
+All routes go through the gateway and need a token, except login, logout and the API key exchange. Each user gets 20 requests per second, with bursts up to 40; over that is `429` with a `Retry-After` header. Errors are JSON: `{"error": "..."}`.
 
 | Method | Path | Does |
 | --- | --- | --- |
 | `POST` | `/v1/auth/login` | `{email, password}` → `{token, expires_at}` and the session cookie |
 | `POST` | `/v1/auth/logout` | Clears the session cookie |
+| `POST` | `/v1/auth/token` | API key as the bearer token → `{token, expires_at}` |
 | `GET` | `/v1/auth/me` | The caller: `{id, email, admin, created_at}` |
+| `POST` | `/v1/auth/keys` | `{name}` → a new API key, shown once |
+| `GET` | `/v1/auth/keys` | Your API keys (without the keys themselves) |
+| `DELETE` | `/v1/auth/keys/{id}` | Revoke an API key |
 | `POST` | `/v1/auth/password` | `{current, new}`: change your password |
 | `POST` | `/v1/auth/users` | Admin only: `{email, password, admin?}` |
 | `GET` | `/v1/auth/users` | Admin only: every user |
@@ -528,6 +561,7 @@ All routes go through the gateway and need a token, except login and logout. Eac
 | `GET` | `/v1/jobs/{id}/attempts` | Its attempt history |
 | `POST` | `/v1/jobs/{id}/cancel` | Cancel |
 | `POST` | `/v1/jobs/{id}/redrive` | Retry a dead job |
+| `POST` | `/v1/jobs/redrive` | Retry every dead job, or `{queue}`'s, up to 1000 per call |
 | `GET` | `/v1/queues` | Your job counts by queue and state |
 | `POST` | `/v1/schedules` | Create `{name, cron, timezone, job}` |
 | `GET` | `/v1/schedules` | List |

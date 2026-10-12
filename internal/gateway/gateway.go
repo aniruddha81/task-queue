@@ -45,9 +45,9 @@ type gateway struct {
 func New(cfg Config) http.Handler {
 	g := &gateway{cfg: cfg, auth: proxy(cfg.Auth, cfg), jobs: proxy(cfg.Jobs, cfg), limiters: map[uuid.UUID]*rate.Limiter{}}
 	mux := http.NewServeMux()
-	mux.Handle("/v1/auth/", g.auth) // login and logout: no token yet
+	mux.Handle("/v1/auth/", g.auth) // login, logout and the API key exchange: no token yet
 	// Account routes act as the caller, so a browser session's cookie becomes the token here.
-	for _, p := range []string{"/v1/auth/me", "/v1/auth/password", "/v1/auth/users", "/v1/auth/users/"} {
+	for _, p := range []string{"/v1/auth/me", "/v1/auth/password", "/v1/auth/users", "/v1/auth/users/", "/v1/auth/keys", "/v1/auth/keys/"} {
 		mux.Handle(p, g.authed(g.auth))
 	}
 	mux.Handle("GET /.well-known/jwks.json", g.auth)

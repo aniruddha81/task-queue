@@ -252,3 +252,60 @@ func TestListAndDeleteUsers(t *testing.T) {
 		t.Errorf("deleted user can still sign in: %d", code)
 	}
 }
+
+func TestAPIKeys(t *testing.T) {
+	s, srv := newService(t)
+	_, userTok := login(t, srv, "user@example.com", "user-password-12")
+	_, adminTok := login(t, srv, "admin@example.com", "admin-password-1")
+
+	code, b := send(t, srv, "POST", "/v1/auth/keys", userTok, `{"name":"billing service"}`)
+	var k struct{ ID, Key string }
+	json.Unmarshal(b, &k)
+	if code != http.StatusCreated || !strings.HasPrefix(k.Key, "tq_") || len(k.Key) < 40 {
+		t.Fatalf("create: %d %s", code, b)
+	}
+	if code, _ := send(t, srv, "POST", "/v1/auth/keys", "", `{"name":"x"}`); code != http.StatusUnauthorized {
+		t.Errorf("create without a token: %d, want 401", code)
+	}
+
+	// The key buys a token for its owner.
+	code, b = send(t, srv, "POST", "/v1/auth/token", k.Key, "")
+	var tok struct{ Token string }
+	json.Unmarshal(b, &tok)
+	if code != http.StatusOK || tok.Token == "" {
+		t.Fatalf("exchange: %d %s", code, b)
+	}
+	if code, b := send(t, srv, "GET", "/v1/auth/me", tok.Token, ""); code != http.StatusOK || !strings.Contains(string(b), "user@example.com") {
+		t.Errorf("token from key is not the owner's: %d %s", code, b)
+	}
+	for name, bad := range map[string]string{"wrong key": "tq_not-a-real-key", "no prefix": "abc", "a session token": userTok} {
+		if code, _ := send(t, srv, "POST", "/v1/auth/token", bad, ""); code != http.StatusUnauthorized {
+			t.Errorf("exchange with %s: %d, want 401", name, code)
+		}
+	}
+
+	// Listed without the secret; nobody else's to see or revoke.
+	if code, b := send(t, srv, "GET", "/v1/auth/keys", userTok, ""); code != http.StatusOK || strings.Contains(string(b), k.Key) || !strings.Contains(string(b), "billing service") {
+		t.Errorf("list: %d %s", code, b)
+	}
+	if code, b := send(t, srv, "GET", "/v1/auth/keys", adminTok, ""); code != http.StatusOK || strings.Contains(string(b), k.ID) {
+		t.Errorf("another user's list shows the key: %d %s", code, b)
+	}
+	if code, _ := send(t, srv, "DELETE", "/v1/auth/keys/"+k.ID, adminTok, ""); code != http.StatusNotFound {
+		t.Errorf("another user revoking: %d, want 404", code)
+	}
+
+	// Only a hash is stored.
+	var stored []byte
+	s.db.QueryRow(t.Context(), `SELECT hash FROM api_keys WHERE id = $1`, k.ID).Scan(&stored)
+	if len(stored) != 32 || strings.Contains(string(stored), k.Key) {
+		t.Errorf("stored %d bytes; want a 32-byte hash", len(stored))
+	}
+
+	if code, _ := send(t, srv, "DELETE", "/v1/auth/keys/"+k.ID, userTok, ""); code != http.StatusNoContent {
+		t.Errorf("revoke: %d, want 204", code)
+	}
+	if code, _ := send(t, srv, "POST", "/v1/auth/token", k.Key, ""); code != http.StatusUnauthorized {
+		t.Errorf("revoked key still exchanges: %d", code)
+	}
+}

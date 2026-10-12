@@ -1,0 +1,502 @@
+openapi: 3.1.0
+info:
+  title: task-queue
+  version: "1"
+  description: |
+    A distributed job scheduler. Submit jobs with an Idempotency-Key, watch them run,
+    and schedule them with cron. Guide: docs/usage.md in the repository.
+
+    Authenticate with `Authorization: Bearer <token>`. Get a token from /v1/auth/login
+    (a person) or /v1/auth/token (a program, with an API key). Tokens last 60 minutes.
+    Browsers use the session cookie instead; writes from a browser must carry an Origin
+    header naming this site.
+servers:
+  - url: https://tq.aniruddha81.tech
+  - url: https://localhost:8443
+security:
+  - bearer: []
+tags:
+  - name: auth
+    description: Sign in, API keys, your account, and users (admins)
+  - name: jobs
+    description: Submit, watch, cancel and redrive jobs
+  - name: schedules
+    description: Cron schedules that create one job per tick
+  - name: system
+    description: Read-only views of the whole system
+
+paths:
+  /v1/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Clear the browser session cookie
+      security: []
+      responses:
+        "204": { description: Signed out }
+  /v1/auth/token:
+    post:
+      operationId: exchangeApiKey
+      tags: [auth]
+      summary: Exchange an API key for a token
+      description: Send the API key (tq_...) as the bearer token.
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: The signed-in user
+      responses:
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/auth/password:
+    post:
+      operationId: changePassword
+      tags: [auth]
+      summary: Change your password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current, new]
+              properties:
+                current: { type: string }
+                new: { type: string, minLength: 12 }
+      responses:
+        "204": { description: Changed }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { description: The current password is wrong }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/users:
+    get:
+      operationId: listUsers
+      tags: [auth]
+      summary: Every user (admin only)
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users: { type: array, items: { $ref: "#/components/schemas/User" } }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createUser
+      tags: [auth]
+      summary: Create a user (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12 }
+                admin: { type: boolean, default: false }
+      responses:
+        "201": { description: Created }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { description: Email already registered }
+  /v1/auth/users/{id}:
+    delete:
+      operationId: deleteUser
+      tags: [auth]
+      summary: Delete a user (admin only; not yourself)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Deleted. A session already open ends within 60 minutes. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: You can't delete your own account }
+  /v1/auth/keys:
+    get:
+      operationId: listApiKeys
+      tags: [auth]
+      summary: Your API keys (never the key itself)
+      responses:
+        "200":
+          description: Keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys: { type: array, items: { $ref: "#/components/schemas/ApiKey" } }
+    post:
+      operationId: createApiKey
+      tags: [auth]
+      summary: Create an API key
+      description: The response is the only time the key is shown.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKey" }
+  /v1/auth/keys/{id}:
+    delete:
+      operationId: revokeApiKey
+      tags: [auth]
+      summary: Revoke an API key
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Revoked. Tokens already exchanged run out within 60 minutes. }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/jobs:
+    post:
+      operationId: submitJob
+      tags: [jobs]
+      summary: Submit a job
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: 1-200 characters, unique per job you mean to create. Repeating it returns the same job.
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JobRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/Job" }
+        "200": { $ref: "#/components/responses/Job" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { description: The key was used with a different body }
+        "503": { description: Outcome unknown; retry with the same Idempotency-Key }
+    get:
+      operationId: listJobs
+      tags: [jobs]
+      summary: List your jobs, newest first
+      parameters:
+        - { name: state, in: query, schema: { $ref: "#/components/schemas/State" } }
+        - { name: queue, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: after, in: query, description: The previous page's next, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: A page of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs: { type: array, items: { $ref: "#/components/schemas/Job" } }
+                  next: { type: [string, "null"], format: uuid, description: Pass as after for the next page }
+  /v1/jobs/{id}:
+    get:
+      operationId: getJob
+      tags: [jobs]
+      summary: Get a job
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Job" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/jobs/{id}/attempts:
+    get:
+      operationId: listAttempts
+      tags: [jobs]
+      summary: A job's attempt history
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Attempts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attempts: { type: array, items: { $ref: "#/components/schemas/Attempt" } }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/jobs/{id}/cancel:
+    post:
+      operationId: cancelJob
+      tags: [jobs]
+      summary: Cancel a waiting or running job
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Job" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: Already finished }
+  /v1/jobs/{id}/redrive:
+    post:
+      operationId: redriveJob
+      tags: [jobs]
+      summary: Retry a dead job with a fresh attempt budget
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Job" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: The job isn't dead }
+  /v1/jobs/redrive:
+    post:
+      operationId: redriveAllJobs
+      tags: [jobs]
+      summary: Redrive every dead job, or one queue's (up to 1000 a call)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                queue: { type: string, description: Only this queue; absent means all }
+      responses:
+        "200":
+          description: How many were redriven
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  redriven: { type: integer }
+  /v1/queues:
+    get:
+      operationId: listQueues
+      tags: [jobs]
+      summary: Your job counts by queue and state
+      responses:
+        "200":
+          description: Counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queues:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        queue: { type: string }
+                        state: { $ref: "#/components/schemas/State" }
+                        count: { type: integer }
+
+  /v1/schedules:
+    get:
+      operationId: listSchedules
+      tags: [schedules]
+      summary: Your schedules
+      responses:
+        "200":
+          description: Schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedules: { type: array, items: { $ref: "#/components/schemas/Schedule" } }
+    post:
+      operationId: createSchedule
+      tags: [schedules]
+      summary: Create a schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, cron, timezone, job]
+              properties:
+                name: { $ref: "#/components/schemas/Name" }
+                cron: { type: string, description: "5 fields: minute hour day-of-month month day-of-week", example: "0 9 * * *" }
+                timezone: { type: string, description: An IANA time zone, example: Asia/Kolkata }
+                job: { $ref: "#/components/schemas/JobRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/Schedule" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { description: Name taken }
+  /v1/schedules/{id}:
+    get:
+      operationId: getSchedule
+      tags: [schedules]
+      summary: Get a schedule
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Schedule" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteSchedule
+      tags: [schedules]
+      summary: Delete a schedule (jobs it created stay)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/schedules/{id}/pause:
+    post:
+      operationId: pauseSchedule
+      tags: [schedules]
+      summary: Pause (ticks while paused never fire)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Schedule" }
+  /v1/schedules/{id}/resume:
+    post:
+      operationId: resumeSchedule
+      tags: [schedules]
+      summary: Resume from the next tick after now
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Schedule" }
+
+  /v1/workers:
+    get:
+      operationId: listWorkers
+      tags: [system]
+      summary: Every worker, system-wide
+      responses:
+        "200": { description: "{workers: [...]}" }
+  /v1/leader:
+    get:
+      operationId: getLeader
+      tags: [system]
+      summary: The leader scheduler and its epoch
+      responses:
+        "200": { description: "{holder, epoch, expires_at, held}" }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+  responses:
+    Error:
+      description: An error
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string } } }
+    Token:
+      description: A token for 60 minutes
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              token: { type: string }
+              expires_at: { type: string, format: date-time }
+    Job:
+      description: The job
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Job" }
+    Schedule:
+      description: The schedule
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Schedule" }
+  schemas:
+    Name: { type: string, pattern: "^[a-z0-9._-]{1,64}$" }
+    State: { type: string, enum: [available, running, succeeded, dead, cancelled] }
+    JobRequest:
+      type: object
+      required: [queue, type]
+      additionalProperties: false
+      properties:
+        queue: { $ref: "#/components/schemas/Name" }
+        type: { $ref: "#/components/schemas/Name" }
+        payload: { description: "Any JSON, for the handler; default {}" }
+        priority: { type: integer, minimum: -1000, maximum: 1000, default: 0 }
+        run_at: { type: string, format: date-time, description: Not before this time (not in a schedule's job) }
+        max_attempts: { type: integer, minimum: 1, maximum: 50, default: 5 }
+        timeout_seconds: { type: integer, minimum: 1, maximum: 3600, default: 60 }
+        affinity: { type: string, enum: [aws, azure], description: Prefer workers in this cloud for 30 s }
+    Job:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        queue: { type: string }
+        type: { type: string }
+        payload: {}
+        priority: { type: integer }
+        run_at: { type: string, format: date-time }
+        state: { $ref: "#/components/schemas/State" }
+        cancel_requested: { type: boolean }
+        attempt: { type: integer }
+        max_attempts: { type: integer }
+        timeout_seconds: { type: integer }
+        affinity: { type: [string, "null"] }
+        last_error: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time, description: Deleted 30 days after this }
+    Attempt:
+      type: object
+      properties:
+        attempt: { type: integer }
+        node_id: { type: string, format: uuid }
+        node_name: { type: [string, "null"] }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        outcome: { type: [string, "null"], enum: [succeeded, failed, lease_expired, cancelled, null] }
+        error: { type: [string, "null"] }
+        late_result: { type: [string, "null"], description: A result refused because its lease was lost }
+        late_at: { type: [string, "null"], format: date-time }
+    Schedule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        cron: { type: string }
+        timezone: { type: string }
+        job: { $ref: "#/components/schemas/JobRequest" }
+        paused: { type: boolean }
+        next_tick_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        admin: { type: boolean }
+        created_at: { type: string, format: date-time }
+    ApiKey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        key: { type: string, description: Only in the response that creates it }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: [string, "null"], format: date-time }
