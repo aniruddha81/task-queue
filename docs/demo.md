@@ -5,7 +5,7 @@ The plan calls for a 2–3 minute video with six shots. Each one shows a guarant
 **Before recording:**
 
 - Start the local stack: `go run ./cmd/devcerts && docker compose -f deploy/local/compose.yml up --build -d`.
-- Sign in to the dashboard at `https://tq-aniruddha81.trafficmanager.net`, and locally at `https://localhost:8443` (`demo@example.com` / `demo-password-1`).
+- Sign in to the dashboard at `https://tq.aniruddha81.tech`, and locally at `https://localhost:8443` (`demo@example.com` / `demo-password-1`).
 - Check that no rollout is running, because experiments share its concurrency group: `gh run list --workflow release.yml -L 1`.
 
 ---

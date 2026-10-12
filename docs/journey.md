@@ -235,7 +235,7 @@ This is the centerpiece, and the reason every later claim can be trusted.
 
 ## 4. Where it stands now (Oct 12, 2026)
 
-- **Live:** `https://tq-aniruddha81.trafficmanager.net`, on eight VMs:
+- **Live:** `https://tq.aniruddha81.tech` (a CNAME to `tq-aniruddha81.trafficmanager.net`), on eight VMs:
   - AWS Mumbai: `svc-a`, `work-a`, `pg-a`, `ops-a`
   - AWS Hyderabad: `wit` (the etcd witness)
   - Azure Central India: `svc-z`, `work-z`, `pg-z`
