@@ -2,6 +2,16 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-12 · A daily OS update pushed the database primary into the OOM killer
+
+**Found by:** the release for the custom domain. Its preflight found the Azure VMs, then every VM, not answering Run Command, retried for an hour, and failed with "nothing changed". The service itself kept answering throughout.
+
+**Cause:** at about 06:34 UTC, Ubuntu's `unattended-upgrades` started on `pg-z`, which was then the primary. `pg-z` is a `B2ats v2`, with 892 MiB of usable memory and no swap, running Postgres, Patroni and etcd. The upgrade (a locale regeneration among others) needed more memory than was left. Free memory fell from about 170 MiB to 2–5 MiB, the load average reached 60, `kswapd0` was busy reclaiming memory, and the kernel's OOM killer fired (it killed `localedef`). The starved VM agent took about 9 minutes per Run Command, so each preflight round outlasted its patience. The final round also ran into the hour-long lifetime of the workflow's AWS credentials, so the AWS VMs failed too, though they were fine.
+
+**Fix:** `deploy.sh` gives every VM a 1 GiB swapfile, with `vm.swappiness = 10` so it is used only under pressure. It runs at every boot and on every rollout. The preflight was right to refuse: it found a sick database VM before anything changed.
+
+**Lesson:** the smallest VMs ran the most important process with no margin at all. A daily OS job, not traffic, was what found the edge. The OOM killer chose an apt helper this time; next time it could have chosen Postgres on the primary.
+
 ## 2026-10-12 · The sixth mutant, `notick`, was never built, and nothing would have caught it
 
 **Found by:** checking the finished project against the plan in week 16. The plan lists six mutant builds, and only five existed. The missing one removes cron's tick uniqueness.

@@ -12,6 +12,15 @@ TAG=$sha
 VERSION=$sha
 set +a
 
+# Swap, 1 GiB, used only under pressure. The Azure VMs have 1 GiB of RAM and came with none,
+# so the daily unattended-upgrades on pg-z (Postgres, Patroni, etcd) hit the OOM killer.
+if [ -z "$(swapon --show=NAME --noheadings)" ]; then
+  [ -f /swapfile ] || { fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap -q /swapfile; }
+  swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+fi
+echo 'vm.swappiness = 10' >/etc/sysctl.d/90-tq-swap.conf && sysctl -q -p /etc/sysctl.d/90-tq-swap.conf
+
 compose() { docker compose -p "tq-$1" -f "$here/$1.compose.yml" "${@:2}"; }
 migrate() { docker run --rm --network host -v /etc/tq/certs:/certs:ro -e TLS_DIR=/certs -e DATABASE_URL="$2" "$IMAGE/migrate:$TAG" "$1"; }
 
