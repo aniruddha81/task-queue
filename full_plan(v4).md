@@ -670,21 +670,21 @@ These are scope decisions, and the design doc states them openly:
 
 ## Success checklist
 
-- [ ] Submit through the gateway over TLS, and watch available → running → succeeded on the dashboard
-- [ ] Concurrency test: 5 workers, 1,000 jobs, exactly one attempt per job, 20 runs under `-race`
-- [ ] A paused worker's late completion is rejected (fencing), and the job's effect happens once
-- [ ] Retries with backoff; dead letter after exactly `max_attempts`; redrive works
-- [ ] Priorities and delays respected (database clock)
-- [ ] Two schedulers: leader handover with no duplicate or skipped tick; the stale leader's chore is rejected
-- [ ] Access to another user's jobs is refused; tokens with the wrong key or `alg: none` are rejected
-- [ ] The chaos test passes G1–G8 locally and across AWS + Azure, with every fault count above zero
-- [ ] Every mutant build fails the checker
-- [ ] Automatic failover with zero acknowledged jobs lost, locally and across clouds, with a measured RTO
-- [ ] Every deploy since go-live shows zero failed probe requests
-- [ ] Act 1 fragility report and Act 2 resilience report, with numbers
-- [ ] Load results with the `SKIP LOCKED` ceiling explained
-- [ ] Design doc, decision records, bug diary, demo video
-- [ ] Cost report published, and the keep-running-or-destroy decision made
+- [x] Submit through the gateway over TLS, and watch available → running → succeeded on the dashboard
+- [x] Concurrency test: 5 workers, 1,000 jobs, exactly one attempt per job, 20 runs under `-race`
+- [x] A paused worker's late completion is rejected (fencing), and the job's effect happens once
+- [x] Retries with backoff; dead letter after exactly `max_attempts`; redrive works
+- [x] Priorities and delays respected (database clock)
+- [x] Two schedulers: leader handover with no duplicate or skipped tick; the stale leader's chore is rejected
+- [x] Access to another user's jobs is refused; tokens with the wrong key or `alg: none` are rejected
+- [x] The chaos test passes G1–G8 locally and across AWS + Azure, with every fault count above zero
+- [x] Every mutant build fails the checker (four by the chaos checker; `noepoch` by `TestPausedLeaderIsFenced`, see `docs/bugs.md`)
+- [x] Automatic failover with zero acknowledged jobs lost, locally and across clouds, with a measured RTO
+- [x] Every deploy since go-live shows zero failed probe requests
+- [x] Act 1 fragility report and Act 2 resilience report, with numbers
+- [x] Load results with the `SKIP LOCKED` ceiling explained
+- [ ] Design doc, decision records, bug diary, demo video (all but the video: `docs/demo.md` has the shot list)
+- [x] Cost report published, and the keep-running-or-destroy decision made
 
 ---
 

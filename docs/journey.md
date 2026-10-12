@@ -1,4 +1,4 @@
-# How this was built: weeks 1–12
+# How this was built: weeks 1–16
 
 A learning log for the project so far: what each week built, the idea behind it, how it was proven, and what broke along the way. The plan is in [full_plan(v4).md](../full_plan(v4).md), the evidence in [results/](results/), and every bug in [bugs.md](bugs.md). This file ties them together.
 
@@ -201,6 +201,23 @@ This is the centerpiece, and the reason every later claim can be trusted.
   - **A replaced VM couldn't rejoin etcd for 48 minutes,** because an earlier experiment left the leader believing a healthy peer was gone. An experiment's fault can outlive the experiment.
   - **Run Command waited forever for a command that was never sent.** A helper called under `||` runs without `set -e`, so it has to fail explicitly.
 
+### Weeks 14–15: production, always on
+
+- **Go-live:** the VMs run 24/7 from Oct 11, with no nightly stop. Every fault the design survives is now run in production, under the probe ([act2-resilience.md](results/act2-resilience.md)).
+- **Twelve faults, twelve checker passes:** stopping each stateless VM, each worker VM and the witness; pausing each worker past its leases; failing the database over in both directions; cutting the clouds apart; stopping all of Azure; stopping AWS Mumbai. 594 of 47,780 probe requests failed (1.24%), and every one of them was sent within 43 s of a fault starting.
+- **Act 1 → Act 2:** losing the gateway went from 59 s with everything public down to 2 failed requests. Losing AWS went from 204 s of total outage to about 31 s, then full service from Azure alone.
+- **Load in the cloud** ([load-cloud.md](results/load-cloud.md)): 101 jobs/s with synchronous replication and 307 without. 80% of the database's waiting was for the standby in the other cloud. That works out to at most 6.8 KB between the clouds per job, and $0.14 per million jobs at today's bill.
+- **Bugs:**
+  - **`stop-aws` would have stopped nothing:** the witness is in another region, and EC2 rejects a whole call that contains one unknown ID. A scenario written for one topology has to be re-read when the topology changes.
+  - **The load test died reading a byte count:** a Run Command marker landed on the same line as output that had no final newline.
+
+### Week 16: ship it
+
+- **[design.md](design.md):** the design and what each guarantee costs. **[decisions/](decisions/):** one page per major decision.
+- **[results/cost.md](results/cost.md):** about $4 billed so far, all of it covered by credits. Running 24/7 costs about $79–92 a month once the free VM hours run out, half the plan's estimate.
+- **The decision:** keep it running on credits until Dec 14, then destroy everything, persistent stack last.
+- **[demo.md](demo.md):** the video's six shots, with the commands for each.
+
 ---
 
 ## 3. Lessons that kept coming back
@@ -215,7 +232,7 @@ This is the centerpiece, and the reason every later claim can be trusted.
 
 ---
 
-## 4. Where it stands now (Oct 11, 2026)
+## 4. Where it stands now (Oct 12, 2026)
 
 - **Live:** `https://tq-aniruddha81.trafficmanager.net`, on eight VMs:
   - AWS Mumbai: `svc-a`, `work-a`, `pg-a`, `ops-a`
@@ -228,18 +245,17 @@ This is the centerpiece, and the reason every later claim can be trusted.
 
 ### Open issues to keep in mind
 
-- **Azure credit expires 2026-12-21**, before the planned go-live in week 14 ([accounts.md](results/accounts.md)). Decide: renew Azure for Students, move the cloud phases earlier, or run production on AWS only after that date.
-- **Let's Encrypt allows 5 duplicate certificates a week** for the name. This week used 4, so avoid `make down` / `make up` until about Oct 15. The shared certificate store lives in the session's database, so a fresh session issues a new certificate.
+- **Azure credit expires 2026-12-21.** Decided: keep the system running on credits until Dec 14, then destroy it, persistent stack last ([cost.md](results/cost.md)).
+- **The free VM hours run out mid-month** (around Oct 15 on AWS, Oct 20 on Azure), and compute is then billed against credits. Check the bill to confirm.
 - **A small Terraform drift:** the Key Vault release-record secrets show an in-place update on every persistent apply. Their values are ignored, but the cause hasn't been found yet.
 
 ---
 
 ## 5. What's next
 
-| Week | Work |
-| --- | --- |
-| 14–15 | Production: VMs run 24/7; every survivable fault runs in production under the probe; cloud load tests and cost per million jobs. |
-| 16 | The design doc, decision records, a demo video, the cost report, and the keep-or-destroy decision. |
+- **Record the demo video** from [demo.md](demo.md).
+- **Dec 14, 2026:** tear down, following the steps in [cost.md](results/cost.md).
+- After that, only the stretch goals in the plan, such as a witness on a third provider, batched completions, or a broker comparison.
 
 ---
 
