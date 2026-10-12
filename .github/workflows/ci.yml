@@ -47,6 +47,14 @@ jobs:
       - run: npm run lint
       - run: npm run build # static export to web/out
 
+  # The release scripts' own checks: which files make a full release, and what a deploy stops.
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash deploy/release/changes.sh HEAD HEAD
+      - run: bash deploy/vm/deploy_test.sh
+
   # Compares proto/ against the previous release commit. Skipped on the branch's first push.
   proto-breaking:
     if: github.event.before != '0000000000000000000000000000000000000000'

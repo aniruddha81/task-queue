@@ -21,13 +21,34 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # What changed since the running release (its public /version): docs, web or full. Docs
+  # skips build and deploy; web skips the chaos run and rolls out the gateways only.
+  changes:
+    runs-on: ubuntu-latest
+    outputs: { kind: "${{ steps.kind.outputs.kind }}" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: kind
+        env: { REDEPLOY: "${{ inputs.sha }}" }
+        run: |
+          kind=full
+          if [ -z "$REDEPLOY" ]; then
+            deployed=$(curl -fsS --max-time 10 https://tq.aniruddha81.tech/version || true)
+            kind=$(bash deploy/release/changes.sh "$deployed" "$SHA")
+            echo "::notice::release kind: $kind (running: ${deployed:0:7})"
+          fi
+          echo "kind=$kind" >>"$GITHUB_OUTPUT"
+
   verify:
     if: ${{ !inputs.sha }}
     uses: ./.github/workflows/ci.yml
 
   # A short chaos run on local Compose: the same checker, every guarantee, before any deploy.
   chaos:
-    if: ${{ !inputs.sha }}
+    needs: changes
+    if: ${{ !inputs.sha && needs.changes.outputs.kind == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -58,8 +79,8 @@ jobs:
   # One multi-arch image per binary (AWS VMs are arm64, Azure's amd64), tagged with the
   # commit. An existing tag is never overwritten: a redeploy reuses it.
   build:
-    needs: [verify, chaos]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    needs: [changes, verify, chaos]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.changes.outputs.kind != 'docs' }}
     runs-on: ubuntu-latest
     permissions: { contents: read, packages: write }
     strategy:
@@ -108,7 +129,7 @@ jobs:
   # OIDC only: the cloud roles trust this repository's `cloud` environment, which only the
   # release branch may use. GitHub stores no cloud secret.
   deploy:
-    needs: build
+    needs: [changes, build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     environment: cloud
@@ -129,4 +150,4 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID || '74d68da5-2bb7-4d7f-b821-a3f37068b6ff' }}
           tenant-id: ${{ vars.AZURE_TENANT_ID || 'ec09245d-6214-4349-8ab9-16c1c6883100' }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID || 'f6066207-6a3b-404e-a867-9d3001e7bbfc' }}
-      - run: bash deploy/release/rollout.sh "$SHA"
+      - run: bash deploy/release/rollout.sh "$SHA" "${{ needs.changes.outputs.kind }}"

@@ -51,7 +51,7 @@ code, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
 .filters { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-select, input, button { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+select, input, textarea, button { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
 button { cursor: pointer; }
 button:hover { border-color: var(--accent); }
 .error { color: var(--bad); margin: 8px 0; }
@@ -59,3 +59,11 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
 dt { color: var(--muted); }
 dd { margin: 0; }
 form.login { display: grid; gap: 8px; max-width: 320px; }
+form.job { display: grid; gap: 12px; max-width: 640px; }
+form.job label { display: grid; gap: 4px; }
+form.job label > span { color: var(--muted); }
+form.job textarea { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: 12px; resize: vertical; }
+form.job details { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
+form.job summary { cursor: pointer; color: var(--muted); }
+form.job .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 12px; }
+form.job button[type="submit"] { justify-self: start; padding: 6px 16px; }

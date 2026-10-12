@@ -6,8 +6,11 @@
 # request fails the release. If anything fails, the same procedure redeploys the previous
 # release and the script fails. Runs in release.yml with OIDC credentials for both clouds
 # (aws and az CLIs, and Go for the probe); VMs are reached through Run Command, never SSH.
+#   rollout.sh <sha> web   only the dashboard changed (changes.sh): roll out the gateways
+#                          alone, the one role that serves it. Rollback is always full.
 set -euo pipefail
 sha=$1
+kind=${2:-full}
 . "$(dirname "$0")/vmrun.sh"
 
 param() { aws ssm get-parameter --region $region --name "/tq/release/$1" --query Parameter.Value --output text; }
@@ -16,9 +19,9 @@ record() { # in both clouds: each VM reads `current` from its own cloud at boot
   az keyvault secret set --vault-name "$vault" --name "release-$1" --value "$2" -o none
 }
 
-# converge <vm> <sha>: a gateway is drained first, when a twin can serve meanwhile.
+# converge <vm> <sha> [step]: a gateway is drained first, when a twin can serve meanwhile.
 converge() {
-  local name=$1 s=$2 drained=
+  local name=$1 s=$2 step=${3:-} drained=
   if has "$name" gateway; then
     if drain "$name"; then
       drained=1
@@ -27,13 +30,20 @@ converge() {
       inplace=1 # zero downtime is impossible here, so the probe can't hold the release to it
     fi
   fi
-  run "$name" "tq-converge $s" || return 1
+  run "$name" "tq-converge $s $step" || return 1
   [ -z "$drained" ] || undrain "$name"
 }
 
-deploy() { # deploy <sha>: data VMs, then migrations, then everything else, in topology order
-  local s=$1 name migrated=
+deploy() { # deploy <sha> [web]: data VMs, then migrations, then everything else, in topology order
+  local s=$1 web=${2:-} name migrated=
   for name in $(jq -r '.vms[].name' <<<"$topo"); do
+    if [ "$web" = web ]; then # the gateways only; nothing else changed
+      has "$name" gateway || continue
+      echo "::group::$name -> ${s:0:7} (gateway only)"
+      converge "$name" "$s" gateway || { echo "::endgroup::"; return 1; }
+      echo "::endgroup::"
+      continue
+    fi
     if [ -z "$migrated" ] && [ "$(vm "$name" stage)" = app ]; then
       echo "::group::migrate on $ops"
       run "$ops" "tq-converge $s migrate" || { echo "::endgroup::"; return 1; }
@@ -95,7 +105,7 @@ probe_stop() {
 previous=$(param current)
 record target "$sha"
 ok=1
-deploy "$sha" && smoke "$sha" || ok=
+deploy "$sha" "$kind" && smoke "$sha" || ok=
 if ! probe_stop; then
   if [ -n "${inplace:-}" ]; then
     echo "::warning::the probe saw failed requests, expected: a gateway with no twin was deployed in place"

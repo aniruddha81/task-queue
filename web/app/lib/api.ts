@@ -7,10 +7,10 @@ import { useEffect, useState } from "react";
 
 export class Unauthorized extends Error {}
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function call<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    headers: body === undefined ? headers : { ...headers, "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (res.status === 401) {
@@ -25,7 +25,8 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 export const get = <T,>(path: string) => call<T>("GET", path);
-export const post = <T,>(path: string, body?: unknown) => call<T>("POST", path, body ?? {});
+export const post = <T,>(path: string, body?: unknown, headers?: Record<string, string>) =>
+  call<T>("POST", path, body ?? {}, headers);
 
 /** usePoll fetches path now and every 2 s, keeping the last good value. */
 export function usePoll<T>(path: string | null) {

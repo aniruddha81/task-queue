@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"mime"
 	"net/http"
+	"net/mail"
 	"net/smtp"
 	"os"
 	"strings"
@@ -118,14 +120,37 @@ func (c Config) post(ctx context.Context, url, key string, body []byte) error {
 // retry sends again. Message-ID lets a recipient spot the duplicate, but SMTP itself
 // can't refuse it.
 func (c Config) emailSend(ctx context.Context, job worker.Job) error {
-	var p struct{ To, Subject string }
+	var p struct{ To, Subject, Body string }
 	if err := decode(job, &p); err != nil {
 		return err
 	}
-	sum := sha256.Sum256([]byte(job.EffectKey))
-	msg := "From: jobs@task-queue.local\r\nTo: " + p.To + "\r\nSubject: " + p.Subject +
-		"\r\nMessage-ID: <" + hex.EncodeToString(sum[:16]) + "@task-queue.local>\r\n\r\nSent by job " + job.ID + "\r\n"
-	return smtp.SendMail(c.SMTP, nil, "jobs@task-queue.local", []string{p.To}, []byte(msg))
+	msg, err := emailMessage(p.To, p.Subject, p.Body, job.ID, job.EffectKey)
+	if err != nil {
+		return worker.Permanent(err)
+	}
+	return smtp.SendMail(c.SMTP, nil, "jobs@task-queue.local", []string{p.To}, msg)
+}
+
+// emailMessage builds a plain-text UTF-8 message. A line break in to or subject would let the
+// payload add its own headers (a hidden Bcc), so it is refused. The body may have any line
+// endings; SMTP gets CRLF, and net/smtp escapes lines that start with a dot.
+func emailMessage(to, subject, body, jobID, effectKey string) ([]byte, error) {
+	addr, err := mail.ParseAddress(to)
+	if err != nil || strings.ContainsAny(to, "\r\n") {
+		return nil, fmt.Errorf("bad recipient %q", to)
+	}
+	if strings.ContainsAny(subject, "\r\n") {
+		return nil, errors.New("subject may not contain line breaks")
+	}
+	if body == "" {
+		body = "Sent by job " + jobID
+	}
+	body = strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\n", "\r\n")
+	sum := sha256.Sum256([]byte(effectKey))
+	return []byte("From: jobs@task-queue.local\r\nTo: " + addr.String() +
+		"\r\nSubject: " + mime.QEncoding.Encode("utf-8", subject) +
+		"\r\nMessage-ID: <" + hex.EncodeToString(sum[:16]) + "@task-queue.local>" +
+		"\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + body + "\r\n"), nil
 }
 
 // chaosSleep sleeps for {"ms": N}, stopping early if its context ends.

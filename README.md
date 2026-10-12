@@ -143,6 +143,8 @@ That push runs [release.yml](.github/workflows/release.yml), which:
 2. **builds** one multi-arch image per binary, tagged with the commit;
 3. **deploys** in place, one VM at a time. Every service must report the new version as ready before the next one starts. A smoke test then runs one job per cloud through the public name.
 
+A release does only what its changes need ([changes.sh](deploy/release/changes.sh), against the running version): Markdown alone is checked but not deployed, and a change confined to `web/` skips the chaos run and rolls out only the two gateways, the role that serves the dashboard.
+
 If any step fails, the previous release is redeployed the same way. To redeploy an earlier commit, run the workflow by hand with its SHA. See [deployment_plan.md](deployment_plan.md).
 
 The push only fast-forwards, so `release` can never jump to a commit that isn't on `main`.
@@ -224,6 +226,7 @@ docs/results/     measurements and checks (e.g. cloud accounts)
 
 ## Docs
 
+- [docs/usage.md](docs/usage.md): how to use it: sign in, jobs, schedules, built-in job types, writing a handler, the dashboard, the full API
 - [docs/design.md](docs/design.md): the design and its trade-offs: why `SKIP LOCKED` and not a broker, effect keys, fencing, one clock, synchronous-when-possible replication, zero-downtime deploys, the fault model and the known limits
 - [docs/decisions/](docs/decisions/): one short page per major decision, with its cost and evidence
 - [docs/results/cost.md](docs/results/cost.md): what it costs, cost per million jobs, and the keep-or-destroy decision

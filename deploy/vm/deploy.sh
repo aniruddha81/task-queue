@@ -3,6 +3,7 @@
 # boot and by rollout.sh. Each role is one Compose project (deploy/vm/<role>.compose.yml),
 # and each service must answer /readyz on the new version before the next role starts.
 #   deploy.sh <sha> migrate   on the ops VM: apply the jobs and auth migrations instead.
+#   deploy.sh <sha> gateway   the gateway role only (a release that changed only web/).
 set -euo pipefail
 sha=$1
 here=$(cd "$(dirname "$0")" && pwd)
@@ -91,8 +92,11 @@ if [ "${2:-}" = migrate ]; then
   exit 0
 fi
 
+# The roles to converge now. $ROLES stays whole: the clean-up below stops any role not in it.
+roles=$ROLES
+[ "${2:-}" != gateway ] || roles=$(grep -ow gateway <<<"$ROLES" || true)
 touch "$here/../.." # this release is the newest, even when it is a rollback to an older one
-for role in $ROLES; do
+for role in $roles; do
   echo "--- $role"
   compose "$role" pull -q
   case $role in
@@ -150,4 +154,4 @@ done
 # Keep the three newest releases, and images used in the last week.
 ls -1dt /opt/tq/*/ | tail -n +4 | xargs -r rm -rf
 docker image prune -af --filter until=168h >/dev/null
-echo "converged to ${sha:0:7}: $ROLES"
+echo "converged to ${sha:0:7}: $roles"

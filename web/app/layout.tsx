@@ -16,6 +16,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <strong>task-queue</strong>
           <nav>
             <Link href="/">Jobs</Link>
+            <Link href="/new/">New job</Link>
             <Link href="/dead/">Dead letters</Link>
             <Link href="/queues/">Queues</Link>
             <Link href="/workers/">Workers</Link>
