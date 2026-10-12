@@ -217,6 +217,7 @@ This is the centerpiece, and the reason every later claim can be trusted.
 - **[results/cost.md](results/cost.md):** about $4 billed so far, all of it covered by credits. Running 24/7 costs about $79–92 a month once the free VM hours run out, half the plan's estimate.
 - **The decision:** keep it running on credits until Dec 14, then destroy everything, persistent stack last.
 - **[demo.md](demo.md):** the video's six shots, with the commands for each.
+- **The sixth mutant, `notick`,** was found missing and built. The chaos test can't catch it, because one leader still ticks at a time. The concurrent tick test couldn't either, until it counted jobs instead of tick rows. `mutants.sh` now requires all six to be caught.
 
 ---
 

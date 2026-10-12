@@ -297,7 +297,7 @@ Several bugs taught the same lesson: **"ready" must mean "can serve the caller's
 Two rules keep the checker honest:
 
 - **A guarantee whose fault never fired fails.** Each line of the report states how many times its fault was exercised, for example 359 late results rejected or 85 duplicates absorbed.
-- **Every mechanism has a mutant build** (`-tags mutant_<name>`) that removes it, and the checker must fail it. Four of the five mutants failed on exactly the guarantee they break: `nofence` on G3, `nokey` on G2, `noeffectkey` on G4, and `ackfirst` on G1. As [section 5](#5-fencing-tokens) explains, `noepoch` is covered by a unit test.
+- **Every mechanism has a mutant build** (`-tags mutant_<name>`) that removes it, and the checker must fail it. There are six mutants. Four failed the chaos checker on exactly the guarantee they break: `nofence` on G3, `nokey` on G2, `noeffectkey` on G4, and `ackfirst` on G1. The other two remove one layer of a defence the chaos test can't get past. `noepoch` is explained in [section 5](#5-fencing-tokens). `notick` removes the tick's row lock and uniqueness, but one leader still ticks at a time. Both fail deterministic tests instead (`TestPausedLeaderIsFenced` and `TestTickSchedulesConcurrentlyNoDuplicates`), and `mutants.sh` requires all six to be caught.
 
 A check that can't fail proves nothing. The same rule was later applied to the cleanup sweep, the experiment probe and CI's chaos gate, and each of them once reported success when it couldn't see. They now fail instead.
 

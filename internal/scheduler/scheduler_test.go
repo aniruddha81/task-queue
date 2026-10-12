@@ -184,8 +184,9 @@ func TestCronExactlyOnceAcrossForcedHandovers(t *testing.T) {
 	}
 }
 
-// TestTwoSchedulersWithoutFencingStillNoDuplicateTicks: even with leadership bypassed,
-// two processes ticking the same schedule can't create a second job for a tick.
+// TestTickSchedulesConcurrentlyNoDuplicates: even with leadership bypassed, four processes
+// ticking the same schedule can't create a second job for a tick. It is what catches
+// mutant_notick, which the chaos test can't: there, only one leader ever ticks at a time.
 func TestTickSchedulesConcurrentlyNoDuplicates(t *testing.T) {
 	pool := pgtest.Migrated(t, "jobs")
 	store := queue.NewStore(pool)
@@ -217,9 +218,10 @@ func TestTickSchedulesConcurrentlyNoDuplicates(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	var ticks, distinct int
+	var ticks, distinct, jobs int
 	pool.QueryRow(t.Context(), `SELECT count(*), count(DISTINCT tick_at) FROM schedule_ticks`).Scan(&ticks, &distinct)
-	if ticks != distinct || ticks < 60 {
-		t.Errorf("ticks=%d distinct=%d, want equal and >= 60", ticks, distinct)
+	pool.QueryRow(t.Context(), `SELECT count(*) FROM jobs WHERE idempotency_key LIKE 'cron:%'`).Scan(&jobs)
+	if ticks != distinct || ticks < 60 || jobs != ticks {
+		t.Errorf("ticks=%d distinct=%d jobs=%d, want all equal and >= 60", ticks, distinct, jobs)
 	}
 }

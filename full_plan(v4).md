@@ -678,7 +678,7 @@ These are scope decisions, and the design doc states them openly:
 - [x] Two schedulers: leader handover with no duplicate or skipped tick; the stale leader's chore is rejected
 - [x] Access to another user's jobs is refused; tokens with the wrong key or `alg: none` are rejected
 - [x] The chaos test passes G1–G8 locally and across AWS + Azure, with every fault count above zero
-- [x] Every mutant build fails the checker (four by the chaos checker; `noepoch` by `TestPausedLeaderIsFenced`, see `docs/bugs.md`)
+- [x] Every mutant build is caught: four of six by the chaos checker; `noepoch` and `notick` by deterministic tests, because other layers keep a random fault out of their gaps (see `docs/bugs.md`)
 - [x] Automatic failover with zero acknowledged jobs lost, locally and across clouds, with a measured RTO
 - [x] Every deploy since go-live shows zero failed probe requests
 - [x] Act 1 fragility report and Act 2 resilience report, with numbers

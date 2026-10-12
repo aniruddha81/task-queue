@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/robfig/cron/v3"
+
+	"github.com/aniruddha81/task-queue/internal/mutant"
 )
 
 var ErrNameTaken = errors.New("a schedule with this name already exists")
@@ -152,9 +154,13 @@ func (s *Store) TickSchedules(ctx context.Context, max int) (int, error) {
 		Template json.RawMessage `db:"template"`
 		Next     time.Time       `db:"next_tick_at"`
 	}
+	lock, tickConflict := "FOR UPDATE SKIP LOCKED", ""
+	if mutant.NoTick { // broken on purpose: concurrent tickers both take a tick, and nothing dedupes it
+		lock, tickConflict = "", " ON CONFLICT DO NOTHING"
+	}
 	rows, _ := s.db.Query(ctx, `SELECT id, owner_id, cron, timezone, template, next_tick_at FROM schedules
 		WHERE NOT paused AND next_tick_at <= $1 ORDER BY next_tick_at LIMIT 50
-		FOR UPDATE SKIP LOCKED`, now)
+		`+lock, now)
 	schedules, err := pgx.CollectRows(rows, pgx.RowToStructByName[due])
 	if err != nil {
 		return 0, err
@@ -174,12 +180,15 @@ func (s *Store) TickSchedules(ctx context.Context, max int) (int, error) {
 			at := tick
 			j.Owner, j.RunAt = sc.Owner, &at
 			j.Key = "cron:" + sc.ID.String() + ":" + tick.UTC().Format(time.RFC3339)
+			if mutant.NoTick {
+				j.Key += ":" + uuid.NewV7().String()
+			}
 			job, _, err := s.Submit(ctx, j)
 			if err != nil {
 				return n, err
 			}
 			if _, err := s.db.Exec(ctx, `INSERT INTO schedule_ticks (schedule_id, tick_at, job_id)
-				VALUES ($1, $2, $3)`, sc.ID, tick, job.ID); err != nil {
+				VALUES ($1, $2, $3)`+tickConflict, sc.ID, tick, job.ID); err != nil {
 				return n, err
 			}
 			tick = c.Next(tick)

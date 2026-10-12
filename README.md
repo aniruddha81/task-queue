@@ -127,7 +127,7 @@ bash deploy/local/mutants.sh                  # each mutant build must FAIL the 
 
 `go run ./cmd/bench` measures throughput and latency against worker count, with synchronous replication on and off ([local](docs/results/load-local.md), [cloud](docs/results/load-cloud.md)).
 
-`mutants.sh` builds five deliberately broken variants (lease fencing, idempotency keys, effect keys, the leader's epoch fence, and acknowledging before commit each removed in turn) and requires the checker to catch every one.
+`mutants.sh` builds six deliberately broken variants, each with one mechanism removed: lease fencing, idempotency keys, effect keys, acknowledging only after commit, the leader's epoch fence, and tick uniqueness. It requires every one to be caught. The first four are caught by the chaos checker. The last two guard gaps that a random fault can't reach past the other layers, so deterministic tests catch them instead ([bug diary](docs/bugs.md)).
 
 ## Release
 

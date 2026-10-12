@@ -2,6 +2,21 @@
 
 Bugs found by the project's own tests, and what each one taught. Newest first.
 
+## 2026-10-12 · The sixth mutant, `notick`, was never built, and nothing would have caught it
+
+**Found by:** checking the finished project against the plan in week 16. The plan lists six mutant builds, and only five existed. The missing one removes cron's tick uniqueness.
+
+**What `mutant_notick` removes:** everything in the tick path that makes a tick happen once. The schedule row is read without `FOR UPDATE SKIP LOCKED`, the cron job's idempotency key gets a random suffix, and the tick row's insert ignores a primary-key conflict.
+
+**Result:**
+
+- **The chaos test passed it** ([report](results/chaos-r1791785574897130200t1791785574-mutant_notick.md)): G6 PASS through 4 leader changes and 2 scheduler pauses. The reason is that a third layer is still in place. Only one leader ticks at a time, and a takeover waits for a running chore to commit (the epoch fence's `FOR SHARE`), so two tickers never overlap in the chaos test.
+- **`TestTickSchedulesConcurrentlyNoDuplicates` passed it too.** The test runs four tickers at once with leadership bypassed, but it counted only tick rows. The primary key still kept those unique, so the extra ticks appeared only as extra jobs.
+
+**Fix:** the test now also requires one cron job per tick. Against the mutant it fails 3 runs out of 3, with 187–229 jobs for 61 ticks; the normal build passes. `mutants.sh` now covers all six mutants, and requires `noepoch` and `notick` to fail their deterministic tests on the specific assertion (a test that can't reach its database doesn't count as catching anything).
+
+**Lesson:** G6 has three independent layers: one leader per epoch, the schedule row lock, and the unique tick. Any one of them alone prevents a duplicate tick, so no randomly timed fault can show that a single layer is missing. Defence in depth is good for the system and bad for a black-box checker. Each layer needs a test that removes the others. A test also has to count the thing that would actually be duplicated, not the thing a constraint already keeps unique.
+
 ## 2026-10-12 · The cloud load test died reading a byte count: `107117328TQ` (tooling bug)
 
 **Found by:** the first production run of `load.sh`, two minutes in, before it changed anything: `value too great for base (error token is "107117328TQ")`.
