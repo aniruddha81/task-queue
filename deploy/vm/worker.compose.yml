@@ -13,5 +13,9 @@ services:
       CONCURRENCY: 8
       SINKS_URL: ${SINKS_URL}
       SMTP_ADDR: ${SMTP_ADDR}
+      SMTP_RELAY: ${SMTP_RELAY:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
       WEBHOOK_ALLOW: ${WEBHOOK_ALLOW}
     stop_grace_period: 1m # drain: running jobs finish before the container stops

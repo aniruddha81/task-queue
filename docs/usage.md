@@ -41,7 +41,7 @@ The live system is at **https://tq.aniruddha81.tech** (until Dec 14, 2026). It r
 | API and dashboard | https://tq.aniruddha81.tech |
 | Grafana | http://10.99.0.14:3000 (over the WireGuard mesh only) |
 | Prometheus | http://10.99.0.14:9090 (mesh only) |
-| Mailpit (emails the `email.send` jobs send) | http://10.99.0.14:8025 (mesh only) |
+| Mailpit (`email.send` mail to `@example.com` addresses) | http://10.99.0.14:8025 (mesh only) |
 
 The API and dashboard are public. Grafana, Prometheus and Mailpit run on the `ops-a` VM and have no public port; [section 9](#9-the-dashboard-grafana-and-prometheus) shows how to reach them.
 
@@ -301,7 +301,7 @@ The bundled worker (`cmd/worker`) handles these. Field names in payloads are cas
 | `ledger.transfer` | `{"from":"alice","to":"bob","amount":500}` | Moves `amount` between two accounts in the sinks ledger | Exactly once |
 | `webhook.deliver` | `{"url":"https://ops-a:8090/webhook","body":{...}}` | POSTs `body` to `url` with an `Idempotency-Key` header | Exactly once, if the receiver checks the key |
 | `report.daily` | none | Records one daily digest | Exactly once |
-| `email.send` | `{"to":"a@example.com","subject":"Hi","body":"Hello!"}` | Sends a plain-text UTF-8 email over SMTP (to Mailpit). `body` is optional; without it the email says which job sent it. A line break in `to` or `subject` is refused | **At least once**: SMTP can't refuse a duplicate |
+| `email.send` | `{"to":"a@example.com","subject":"Hi","body":"Hello!"}` | Sends a plain-text UTF-8 email from `Task Queue <jobs@aniruddha81.tech>` through Amazon SES. Addresses at `example.com` go to Mailpit instead. While SES is in its sandbox, only verified recipients get mail; anyone else fails the job permanently. `body` is optional; without it the email says which job sent it. A line break in `to` or `subject` is refused | **At least once**: SMTP can't refuse a duplicate |
 | `chaos.sleep` | `{"ms":500}` | Sleeps, then succeeds | |
 | `chaos.fail` | `{"p":0.5}` | Fails with probability `p`, to show retries | |
 | `chaos.overrun` | `{"ms":45000}` | Ignores its deadline, so its late result is fenced | |
@@ -318,8 +318,8 @@ curl $G/v1/jobs -H "$H" -H "Idempotency-Key: pay-1" \
   -d '{"queue":"default","type":"ledger.transfer","payload":{"from":"alice","to":"bob","amount":500}}'
 
 curl $G/v1/jobs -H "$H" -H "Idempotency-Key: mail-1" \
-  -d '{"queue":"default","type":"email.send","payload":{"to":"you@example.com","subject":"Hello"}}'
-# then open Mailpit, http://10.99.0.14:8025, over the mesh
+  -d '{"queue":"default","type":"email.send","payload":{"to":"you@gmail.com","subject":"Hello"}}'
+# arrives in your inbox; to "you@example.com" it lands in Mailpit, http://10.99.0.14:8025, over the mesh
 
 curl $G/v1/jobs -H "$H" -H "Idempotency-Key: flaky-1" \
   -d '{"queue":"default","type":"chaos.fail","payload":{"p":0.7},"max_attempts":3}'
@@ -451,7 +451,7 @@ Then, with the tunnel up:
 | --- | --- | --- |
 | Grafana | http://10.99.0.14:3000 | No login (read-only). Claims per second, queue depth, submit-to-start latency (p50, p95, p99), lease expiries, retries and fenced results, the leader's epoch |
 | Prometheus | http://10.99.0.14:9090 | Raw metrics from dispatch and both schedulers |
-| Mailpit | http://10.99.0.14:8025 | Every email the `email.send` jobs sent |
+| Mailpit | http://10.99.0.14:8025 | Every email the `email.send` jobs sent to `@example.com` |
 
 ## 10. Users and admins
 

@@ -39,6 +39,16 @@ variable "alert_email" {
   default = "ar.roy564@gmail.com"
 }
 
+variable "mail_name" {
+  description = "Display name on email.send mail"
+  default     = "Task Queue"
+}
+
+variable "mail_address" {
+  description = "Sender of email.send mail; SES verifies its whole domain"
+  default     = "jobs@aniruddha81.tech"
+}
+
 variable "aws_monthly_limit" {
   description = "USD per month, credits excluded. At 100% the budget action stops every session EC2 instance."
   default     = 120
@@ -64,6 +74,7 @@ locals {
   # re-created repository can't inherit this trust. The environment's protection rule
   # (deployment branches: release only) is what limits it to `release`.
   github_subject = "repo:${var.github_repo_with_ids}:environment:cloud"
+  mail_domain    = split("@", var.mail_address)[1]
 }
 
 # ---------- Release record: which commit is live. VMs read `current` at every boot. ----------
@@ -310,6 +321,42 @@ resource "aws_iam_role_policy_attachment" "budget_action" {
   policy_arn = "arn:aws:iam::aws:policy/AWSBudgetsActions_RolePolicyForResourceAdministrationWithSSM"
 }
 
+# ---------- Email: SES sends email.send jobs to real recipients ----------
+# The domain's DNS lives outside Terraform: add `mail_dns_records` there by hand, once. Until
+# they verify, and while the account is in the SES sandbox, SES accepts only verified
+# recipients, and the worker fails other jobs for good on SES's 554.
+
+resource "aws_sesv2_email_identity" "mail" {
+  email_identity = local.mail_domain # Easy DKIM: three CNAMEs, SES rotates the keys
+}
+
+# Bounces return to mail.<domain> rather than amazonses.com, so SPF aligns with From (DMARC).
+resource "aws_sesv2_email_identity_mail_from_attributes" "mail" {
+  email_identity         = aws_sesv2_email_identity.mail.email_identity
+  mail_from_domain       = "mail.${local.mail_domain}"
+  behavior_on_mx_failure = "USE_DEFAULT_VALUE"
+}
+
+# SMTP credentials are an IAM user's access key. It may send only as the one sender.
+resource "aws_iam_user" "ses_smtp" {
+  name = "tq-ses-smtp"
+}
+
+resource "aws_iam_user_policy" "ses_smtp" {
+  user = aws_iam_user.ses_smtp.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow", Action = "ses:SendRawEmail", Resource = "*" # sandbox recipients are identities too
+      Condition = { StringEquals = { "ses:FromAddress" = var.mail_address } }
+    }]
+  })
+}
+
+resource "aws_iam_access_key" "ses_smtp" {
+  user = aws_iam_user.ses_smtp.name
+}
+
 # ---------- Outputs: read by the session stack, and set as GitHub variables by make bootstrap ----------
 
 output "aws_role_arn" { value = aws_iam_role.github_release.arn }
@@ -326,3 +373,22 @@ output "session_resource_group" { value = azurerm_resource_group.session.name }
 output "budget_name" { value = aws_budgets_budget.tq.name }
 output "budget_action_role_arn" { value = aws_iam_role.budget_action.arn }
 output "alert_email" { value = var.alert_email }
+output "mail_from" { value = "${var.mail_name} <${var.mail_address}>" }
+output "ses_smtp_relay" { value = "email-smtp.ap-south-1.amazonaws.com:587" }
+output "ses_smtp_user" { value = aws_iam_access_key.ses_smtp.id }
+output "ses_smtp_password" {
+  value     = aws_iam_access_key.ses_smtp.ses_smtp_password_v4
+  sensitive = true
+}
+output "mail_dns_records" {
+  description = "Add these at the domain's DNS host"
+  value = concat(
+    [for t in aws_sesv2_email_identity.mail.dkim_signing_attributes[0].tokens :
+    "CNAME  ${t}._domainkey.${local.mail_domain}  ${t}.dkim.amazonses.com"],
+    [
+      "MX     mail.${local.mail_domain}  10 feedback-smtp.ap-south-1.amazonses.com",
+      "TXT    mail.${local.mail_domain}  \"v=spf1 include:amazonses.com ~all\"",
+      "TXT    _dmarc.${local.mail_domain}  \"v=DMARC1; p=none;\"",
+    ],
+  )
+}

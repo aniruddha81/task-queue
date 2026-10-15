@@ -176,8 +176,13 @@ locals {
     contains(v.roles, "worker") ? {
       DISPATCHERS   = join(",", [for m in local.near[n].dispatch : "https://${m}:8081"])
       SINKS_URL     = "https://${local.ops_vm}:8090"
-      SMTP_ADDR     = "${local.ops_vm}:1025"
+      SMTP_ADDR     = "${local.ops_vm}:1025" # Mailpit: example.com recipients (the chaos harness)
       WEBHOOK_ALLOW = "https://${local.ops_vm}:8090/webhook"
+      # SES, for everyone else. Empty until the persistent stack has it: all mail stays in Mailpit.
+      SMTP_RELAY = try(local.p.ses_smtp_relay, "")
+      SMTP_USER  = try(local.p.ses_smtp_user, "")
+      SMTP_PASS  = try(local.p.ses_smtp_password, "")
+      MAIL_FROM  = try(local.p.mail_from, "")
     } : {},
     contains(v.roles, "etcd") ? {
       ETCD_INITIAL_CLUSTER = join(",", [for m in local.etcd_vms : "${m}=http://${local.vms[m].mesh_ip}:2380"])

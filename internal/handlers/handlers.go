@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,9 +14,11 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"mime"
+	"net"
 	"net/http"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"strings"
 	"time"
@@ -25,7 +28,11 @@ import (
 
 type Config struct {
 	Sinks        string       // base URL of the sinks service
-	SMTP         string       // host:port of the mail server
+	SMTP         string       // host:port of the test mail server (Mailpit)
+	Relay        string       // host:port of a real mail server (SES, port 587); empty: all mail goes to SMTP
+	RelayUser    string       // SMTP credentials for Relay
+	RelayPass    string       //
+	From         string       // sender, "Name <address>"; empty: jobs@task-queue.local
 	WebhookAllow []string     // URL prefixes webhook.deliver may call (anything else is refused)
 	Client       *http.Client // mTLS client for the sinks
 }
@@ -119,38 +126,58 @@ func (c Config) post(ctx context.Context, url, key string, body []byte) error {
 // emailSend can deliver twice: if the worker dies after sending but before reporting, the
 // retry sends again. Message-ID lets a recipient spot the duplicate, but SMTP itself
 // can't refuse it.
+//
+// With a Relay, real recipients get real mail. example.com recipients (the chaos harness's,
+// a reserved domain no one can receive at) still go to Mailpit: through SES they would only
+// bounce, and bounces get an SES account suspended.
 func (c Config) emailSend(ctx context.Context, job worker.Job) error {
 	var p struct{ To, Subject, Body string }
 	if err := decode(job, &p); err != nil {
 		return err
 	}
-	msg, err := emailMessage(p.To, p.Subject, p.Body, job.ID, job.EffectKey)
+	from, err := mail.ParseAddress(cmp.Or(c.From, "jobs@task-queue.local"))
+	if err != nil {
+		return worker.Permanent(fmt.Errorf("sender %q: %w", c.From, err))
+	}
+	msg, to, err := emailMessage(from, p.To, p.Subject, p.Body, job.ID, job.EffectKey)
 	if err != nil {
 		return worker.Permanent(err)
 	}
-	return smtp.SendMail(c.SMTP, nil, "jobs@task-queue.local", []string{p.To}, msg)
+	server, auth := c.SMTP, smtp.Auth(nil)
+	if c.Relay != "" && !strings.HasSuffix(strings.ToLower(to.Address), "@example.com") {
+		host, _, _ := net.SplitHostPort(c.Relay)
+		server, auth = c.Relay, smtp.PlainAuth("", c.RelayUser, c.RelayPass, host)
+	}
+	err = smtp.SendMail(server, auth, from.Address, []string{to.Address}, msg)
+	// 5xx is a refusal (unverified recipient, bad credentials) that a retry won't change;
+	// 4xx (throttling, greylisting) and network errors are retried.
+	if reply := (*textproto.Error)(nil); errors.As(err, &reply) && reply.Code >= 500 {
+		return worker.Permanent(err)
+	}
+	return err
 }
 
 // emailMessage builds a plain-text UTF-8 message. A line break in to or subject would let the
 // payload add its own headers (a hidden Bcc), so it is refused. The body may have any line
 // endings; SMTP gets CRLF, and net/smtp escapes lines that start with a dot.
-func emailMessage(to, subject, body, jobID, effectKey string) ([]byte, error) {
+func emailMessage(from *mail.Address, to, subject, body, jobID, effectKey string) ([]byte, *mail.Address, error) {
 	addr, err := mail.ParseAddress(to)
 	if err != nil || strings.ContainsAny(to, "\r\n") {
-		return nil, fmt.Errorf("bad recipient %q", to)
+		return nil, nil, fmt.Errorf("bad recipient %q", to)
 	}
 	if strings.ContainsAny(subject, "\r\n") {
-		return nil, errors.New("subject may not contain line breaks")
+		return nil, nil, errors.New("subject may not contain line breaks")
 	}
 	if body == "" {
 		body = "Sent by job " + jobID
 	}
 	body = strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\n", "\r\n")
 	sum := sha256.Sum256([]byte(effectKey))
-	return []byte("From: jobs@task-queue.local\r\nTo: " + addr.String() +
+	domain := from.Address[strings.LastIndexByte(from.Address, '@')+1:]
+	return []byte("From: " + from.String() + "\r\nTo: " + addr.String() +
 		"\r\nSubject: " + mime.QEncoding.Encode("utf-8", subject) +
-		"\r\nMessage-ID: <" + hex.EncodeToString(sum[:16]) + "@task-queue.local>" +
-		"\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + body + "\r\n"), nil
+		"\r\nMessage-ID: <" + hex.EncodeToString(sum[:16]) + "@" + domain + ">" +
+		"\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + body + "\r\n"), addr, nil
 }
 
 // chaosSleep sleeps for {"ms": N}, stopping early if its context ends.

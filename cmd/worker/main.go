@@ -2,7 +2,8 @@
 //
 // Environment: DISPATCHERS (comma-separated URLs, nearest first), CLOUD (aws|azure),
 // QUEUES (comma-separated, default "default"), CONCURRENCY (default 4), SINKS_URL,
-// SMTP_ADDR, WEBHOOK_ALLOW (comma-separated URL prefixes), TLS_DIR.
+// SMTP_ADDR (Mailpit), SMTP_RELAY, SMTP_USER, SMTP_PASS (real mail, such as SES on port 587),
+// MAIL_FROM ("Name <address>"), WEBHOOK_ALLOW (comma-separated URL prefixes), TLS_DIR.
 package main
 
 import (
@@ -46,6 +47,10 @@ func main() {
 	handlers.Register(w, handlers.Config{
 		Sinks:        os.Getenv("SINKS_URL"),
 		SMTP:         os.Getenv("SMTP_ADDR"),
+		Relay:        os.Getenv("SMTP_RELAY"),
+		RelayUser:    os.Getenv("SMTP_USER"),
+		RelayPass:    os.Getenv("SMTP_PASS"),
+		From:         os.Getenv("MAIL_FROM"),
 		WebhookAllow: strings.Split(os.Getenv("WEBHOOK_ALLOW"), ","),
 		Client:       serve.Client(certs),
 	})

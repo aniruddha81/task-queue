@@ -63,6 +63,10 @@ override_data {
       budget_name                = "tq"
       budget_action_role_arn     = "arn:aws:iam::123456789012:role/tq-budget-action"
       alert_email                = "ops@example.com"
+      mail_from                  = "Task Queue <jobs@tq.example>"
+      ses_smtp_relay             = "email-smtp.ap-south-1.amazonaws.com:587"
+      ses_smtp_user              = "AKIATEST"
+      ses_smtp_password          = "ses-secret"
     }
   }
 }
@@ -117,6 +121,12 @@ run "act2" { # the default role map: week 13
   assert {
     condition     = !strcontains(aws_ssm_parameter.file["ops-a/tq.env"].value, "JWT_PRIVATE_KEY") && !strcontains(aws_ssm_parameter.file["work-a/tq.env"].value, "JWT_PRIVATE_KEY")
     error_message = "only auth's VMs hold the signing key"
+  }
+  assert {
+    condition = (strcontains(jsondecode(azurerm_key_vault_secret.vm["work-z"].value)["tq.env"], "SMTP_PASS='ses-secret'")
+      && strcontains(aws_ssm_parameter.file["work-a/tq.env"].value, "MAIL_FROM='Task Queue <jobs@tq.example>'")
+    && !strcontains(aws_ssm_parameter.file["svc-a/tq.env"].value, "ses-secret") && !strcontains(aws_ssm_parameter.file["ops-a/tq.env"].value, "ses-secret"))
+    error_message = "both workers can send through SES, and only workers hold its password"
   }
   assert {
     condition     = keys(module.hyderabad.ids) == ["wit"]
