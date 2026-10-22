@@ -28,14 +28,18 @@ func TestAttemptHistoryShowsRejectedLateResult(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("%d attempts, want 2", len(got))
 	}
-	if got[0].LateResult == nil || *got[0].LateResult != "complete" || got[0].NodeName == nil || *got[0].NodeName != "worker-a" {
-		t.Errorf("attempt 1 = %+v, want a rejected late complete from worker-a", got[0])
+	if got[0].LateResult == nil || *got[0].LateResult != "complete" || got[0].NodeName == nil || *got[0].NodeName != "worker-a" ||
+		got[0].NodeCloud == nil || *got[0].NodeCloud != "aws" {
+		t.Errorf("attempt 1 = %+v, want a rejected late complete from worker-a in aws", got[0])
 	}
 	if got[1].Outcome == nil || *got[1].Outcome != "succeeded" || got[1].LateResult != nil {
 		t.Errorf("attempt 2 = %+v, want succeeded", got[1])
 	}
 	if _, err := s.Attempts(t.Context(), uuid.NewV7(), job.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("another owner's attempts: %v, want ErrNotFound", err)
+	}
+	if d, err := s.Day(t.Context()); err != nil || d != (Day{Succeeded: 1, Recovered: 1, Fenced: 1}) {
+		t.Errorf("day = %+v, %v; want 1 succeeded, recovered after a retry, with 1 late result fenced", d, err)
 	}
 }
 

@@ -24,6 +24,8 @@ tags:
     description: Cron schedules that create one job per tick
   - name: system
     description: Read-only views of the whole system
+  - name: public
+    description: The live page's routes. No token; starting a demo is rate-limited per address
 
 paths:
   /v1/auth/login:
@@ -397,6 +399,52 @@ paths:
       responses:
         "200": { description: "{holder, epoch, expires_at, held}" }
 
+  /v1/public/stats:
+    get:
+      operationId: publicStats
+      tags: [public]
+      summary: Workers per cloud, the leader's epoch, and the last 24 hours (cached 5 s)
+      security: []
+      responses:
+        "200": { description: "{clouds: [{cloud, workers, running}], epoch, leader, day: {succeeded, recovered, fenced}}" }
+  /v1/public/try:
+    post:
+      operationId: publicTry
+      tags: [public]
+      summary: Run one fixed demo job as the guest
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scenario]
+              properties:
+                scenario: { type: string, enum: [pay, freeze, flaky, later] }
+      responses:
+        "201": { $ref: "#/components/responses/Job" }
+        "400": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/public/try/{id}:
+    get:
+      operationId: publicTryGet
+      tags: [public]
+      summary: A demo job and its attempts
+      security: []
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: "{job, attempts}"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: "#/components/schemas/Job" }
+                  attempts: { type: array, items: { $ref: "#/components/schemas/Attempt" } }
+        "404": { $ref: "#/components/responses/Error" }
+
 components:
   securitySchemes:
     bearer: { type: http, scheme: bearer, bearerFormat: JWT }
@@ -468,6 +516,7 @@ components:
         attempt: { type: integer }
         node_id: { type: string, format: uuid }
         node_name: { type: [string, "null"] }
+        node_cloud: { type: [string, "null"], enum: [aws, azure, null] }
         started_at: { type: string, format: date-time }
         finished_at: { type: [string, "null"], format: date-time }
         outcome: { type: [string, "null"], enum: [succeeded, failed, lease_expired, cancelled, null] }

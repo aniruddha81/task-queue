@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
@@ -29,6 +30,7 @@ export default function Login() {
         <button type="submit">Sign in</button>
         {error && <p className="error">{error}</p>}
       </form>
+      <p className="muted">No account? <Link href="/live/">See it working live, and try it</Link>.</p>
     </>
   );
 }

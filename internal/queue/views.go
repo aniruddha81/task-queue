@@ -15,6 +15,7 @@ type Attempt struct {
 	Attempt    int        `db:"attempt" json:"attempt"`
 	NodeID     uuid.UUID  `db:"node_id" json:"node_id"`
 	NodeName   *string    `db:"node_name" json:"node_name"`
+	NodeCloud  *string    `db:"node_cloud" json:"node_cloud"`
 	StartedAt  time.Time  `db:"started_at" json:"started_at"`
 	FinishedAt *time.Time `db:"finished_at" json:"finished_at"`
 	Outcome    *string    `db:"outcome" json:"outcome"`
@@ -28,7 +29,7 @@ func (s *Store) Attempts(ctx context.Context, owner, id uuid.UUID) ([]Attempt, e
 		return nil, err // ownership check: another owner's job is "not found"
 	}
 	rows, _ := s.db.Query(ctx, `
-		SELECT a.attempt, a.node_id, n.name AS node_name, a.started_at, a.finished_at, a.outcome,
+		SELECT a.attempt, a.node_id, n.name AS node_name, n.cloud AS node_cloud, a.started_at, a.finished_at, a.outcome,
 		       a.error, a.late_result, a.late_at
 		FROM job_attempts a LEFT JOIN nodes n ON n.id = a.node_id
 		WHERE a.job_id = $1 ORDER BY a.attempt`, id)
@@ -72,6 +73,25 @@ func (s *Store) Workers(ctx context.Context) ([]Worker, error) {
 		      ORDER BY name, last_seen_at DESC) n -- a restarted worker is a new node: show its latest
 		ORDER BY n.cloud, n.name`)
 	return pgx.CollectRows(rows, pgx.RowToStructByName[Worker])
+}
+
+// Day is what the system did in the last 24 hours, for the public live page.
+type Day struct {
+	Succeeded int `db:"succeeded" json:"succeeded"` // jobs that finished successfully
+	Recovered int `db:"recovered" json:"recovered"` // of those, jobs that needed more than one attempt
+	Fenced    int `db:"fenced" json:"fenced"`       // late results refused because their lease was gone
+}
+
+// Day counts jobs that finished in the last 24 hours (on the jobs_finished index).
+func (s *Store) Day(ctx context.Context) (Day, error) {
+	rows, _ := s.db.Query(ctx, `
+		WITH day AS (SELECT id, state, attempt FROM jobs WHERE finished_at > now() - interval '24 hours')
+		SELECT count(*) FILTER (WHERE state = 'succeeded')::int AS succeeded,
+		       count(*) FILTER (WHERE state = 'succeeded' AND attempt > 1)::int AS recovered,
+		       (SELECT count(*)::int FROM job_attempts a
+		        WHERE a.job_id IN (SELECT id FROM day) AND a.late_result IS NOT NULL) AS fenced
+		FROM day`)
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[Day])
 }
 
 type Leader struct {

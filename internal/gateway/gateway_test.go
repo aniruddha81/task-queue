@@ -145,3 +145,23 @@ func TestGatewayRoutes(t *testing.T) {
 		t.Errorf("dashboard: %d %q", code, body)
 	}
 }
+
+// TestGatewayPublic: the live page's routes need no token, only reads and starting a demo are
+// public, and one address gets a handful of demos at once.
+func TestGatewayPublic(t *testing.T) {
+	gw, got, _ := setup(t)
+	if code, _ := call(t, gw, "GET", "/v1/public/stats", nil, ""); code != 200 || got.calls != 1 {
+		t.Errorf("stats without a token: %d, upstream calls %d", code, got.calls)
+	}
+	if code, _ := call(t, gw, "POST", "/v1/public/stats", nil, ""); code != http.StatusUnauthorized {
+		t.Errorf("another public write: %d, want 401", code)
+	}
+	codes := map[int]int{}
+	for range 6 { // a visitor's burst is 5
+		code, _ := call(t, gw, "POST", "/v1/public/try", nil, `{"scenario":"pay"}`)
+		codes[code]++
+	}
+	if codes[200] != 5 || codes[http.StatusTooManyRequests] != 1 {
+		t.Errorf("6 demos from one address: %v, want 5 started and 1 refused", codes)
+	}
+}

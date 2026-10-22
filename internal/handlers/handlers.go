@@ -43,6 +43,7 @@ func Register(w *worker.Worker, c Config) {
 	w.Handle("webhook.deliver", c.webhookDeliver)
 	w.Handle("report.daily", c.reportDaily)
 	w.Handle("email.send", c.emailSend)
+	w.Handle("demo.freeze", c.demoFreeze)
 	w.Handle("chaos.sleep", chaosSleep)
 	w.Handle("chaos.fail", chaosFail)
 	w.Handle("chaos.overrun", chaosOverrun)
@@ -66,6 +67,21 @@ func (c Config) ledgerTransfer(ctx context.Context, job worker.Job) error {
 	}
 	body, _ := json.Marshal(p)
 	return c.post(ctx, c.Sinks+"/ledger/transfer", job.EffectKey, body)
+}
+
+// freeze is how long demo.freeze's first attempt stalls before reporting.
+var freeze = 10 * time.Second
+
+// demoFreeze is the live page's "server freezes mid-payment": a ledger.transfer whose first
+// attempt applies the transfer, then stalls past its deadline, ignoring ctx, before it reports.
+// Another attempt takes over and the ledger absorbs its repeat (same effect key); the stalled
+// attempt's late success is fenced (G3).
+func (c Config) demoFreeze(ctx context.Context, job worker.Job) error {
+	if err := c.ledgerTransfer(ctx, job); err != nil || job.Attempt > 1 {
+		return err
+	}
+	time.Sleep(freeze)
+	return nil
 }
 
 func (c Config) webhookDeliver(ctx context.Context, job worker.Job) error {

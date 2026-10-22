@@ -306,6 +306,7 @@ The bundled worker (`cmd/worker`) handles these. Field names in payloads are cas
 | `chaos.fail` | `{"p":0.5}` | Fails with probability `p`, to show retries | |
 | `chaos.overrun` | `{"ms":45000}` | Ignores its deadline, so its late result is fenced | |
 | `chaos.crash` | `{"p":0.1}` | Kills the whole worker process with probability `p` | |
+| `demo.freeze` | like `ledger.transfer` | The live page's frozen payment: a `ledger.transfer` whose first attempt pays, then stalls for 10 s ignoring its deadline, so another attempt takes over and the stalled one's late result is fenced. Give it a short `timeout_seconds` | Exactly once |
 
 `webhook.deliver` only calls URLs in the worker's `WEBHOOK_ALLOW` list. In production that is `https://ops-a:8090/webhook`, the test receiver, which deduplicates on the effect key. Locally it is `https://sinks:8090/webhook`. Any other URL is a permanent error, and the job goes to `dead`.
 
@@ -401,6 +402,7 @@ Open https://tq.aniruddha81.tech and sign in. It refreshes every 2 seconds.
 | **Account** | Your email and role; change your password; create and revoke API keys |
 | **Users** (admins only) | Every user; add a user or an admin; delete a user |
 | Header | The current leader scheduler and its epoch; who you're signed in as; Sign out |
+| **Live** (`/live/`, public) | For visitors without an account, and where a signed-out visitor lands: workers online per cloud, the last 24 hours (jobs finished, jobs that recovered after a failure, late results fenced), the leader's epoch, and four demos anyone can run and watch step by step: a payment, a payment whose server freezes, a service that fails half the time, and a job booked 20 s ahead |
 
 The Jobs page shows 100 jobs at a time, newest first; **Older →** and **← Newer** page through the rest.
 
@@ -540,7 +542,7 @@ A release that fails any step is rolled back automatically, always with a full r
 
 The full machine-readable spec is at **https://tq.aniruddha81.tech/openapi.yaml** (OpenAPI 3.1). Feed it to any OpenAPI client generator, or open it in an OpenAPI viewer.
 
-All routes go through the gateway and need a token, except login, logout and the API key exchange. Each user gets 20 requests per second, with bursts up to 40; over that is `429` with a `Retry-After` header. Errors are JSON: `{"error": "..."}`.
+All routes go through the gateway and need a token, except login, logout, the API key exchange and `/v1/public/` (the live page's). Starting a demo job is limited to 5 at once per address (one more every 3 s) and 10 at once for everyone together (one more every 2 s). Each user gets 20 requests per second, with bursts up to 40; over that is `429` with a `Retry-After` header. Errors are JSON: `{"error": "..."}`.
 
 | Method | Path | Does |
 | --- | --- | --- |
@@ -571,6 +573,9 @@ All routes go through the gateway and need a token, except login, logout and the
 | `DELETE` | `/v1/schedules/{id}` | Delete |
 | `GET` | `/v1/workers` | Every worker (system-wide, read-only) |
 | `GET` | `/v1/leader` | The leader scheduler: `{holder, epoch, expires_at, held}` |
+| `GET` | `/v1/public/stats` | No token: `{clouds: [{cloud, workers, running}], epoch, leader, day: {succeeded, recovered, fenced}}`, cached 5 s |
+| `POST` | `/v1/public/try` | No token: `{"scenario": "pay" \| "freeze" \| "flaky" \| "later"}` runs that fixed demo job → the job |
+| `GET` | `/v1/public/try/{id}` | No token: a demo job and its attempts, `{job, attempts}` |
 | `GET` | `/.well-known/jwks.json` | Public keys that verify tokens |
 
 | Status | Meaning |

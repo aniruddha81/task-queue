@@ -1,11 +1,13 @@
 // Package gateway is the only public entry point. It routes to auth and jobs, checks the
 // JWT and a per-user rate limit before anything reaches jobs, caps request bodies, turns
 // the browser's session cookie into a bearer token (after a CSRF check), and serves the
-// dashboard's static files.
+// dashboard's static files. /v1/public/ (the live page) needs no token; starting a demo job
+// there is rate-limited per address and overall instead.
 package gateway
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -40,10 +42,13 @@ type gateway struct {
 	auth, jobs *httputil.ReverseProxy
 	mu         sync.Mutex
 	limiters   map[uuid.UUID]*rate.Limiter
+	visitors   map[string]*rate.Limiter // by address, for demo jobs
+	demos      *rate.Limiter            // every visitor's demo jobs together
 }
 
 func New(cfg Config) http.Handler {
-	g := &gateway{cfg: cfg, auth: proxy(cfg.Auth, cfg), jobs: proxy(cfg.Jobs, cfg), limiters: map[uuid.UUID]*rate.Limiter{}}
+	g := &gateway{cfg: cfg, auth: proxy(cfg.Auth, cfg), jobs: proxy(cfg.Jobs, cfg), limiters: map[uuid.UUID]*rate.Limiter{},
+		visitors: map[string]*rate.Limiter{}, demos: rate.NewLimiter(0.5, 10)}
 	mux := http.NewServeMux()
 	mux.Handle("/v1/auth/", g.auth) // login, logout and the API key exchange: no token yet
 	// Account routes act as the caller, so a browser session's cookie becomes the token here.
@@ -51,7 +56,9 @@ func New(cfg Config) http.Handler {
 		mux.Handle(p, g.authed(g.auth))
 	}
 	mux.Handle("GET /.well-known/jwks.json", g.auth)
-	mux.Handle("/v1/", g.authed(g.jobs)) // everything under /v1 except /v1/auth/
+	mux.Handle("/v1/", g.authed(g.jobs)) // everything under /v1 except /v1/auth/ and /v1/public/
+	mux.Handle("GET /v1/public/", g.jobs)
+	mux.Handle("POST /v1/public/try", g.demo(g.jobs))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" && r.Method != "HEAD" {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -120,6 +127,31 @@ func (g *gateway) limiter(owner uuid.UUID) *rate.Limiter {
 		g.limiters[owner] = l
 	}
 	return l
+}
+
+// demo admits a visitor's demo job within a budget for their address and one for everyone:
+// each takes a worker slot, a frozen payment for 10 s, so all of them together are capped.
+func (g *gateway) demo(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr) // Traffic Manager is DNS only: this is the client
+		g.mu.Lock()
+		if len(g.visitors) > 10000 {
+			// ponytail: forgetting everyone at once resets their budgets; an LRU if that is ever abused.
+			clear(g.visitors)
+		}
+		l, ok := g.visitors[ip]
+		if !ok {
+			l = rate.NewLimiter(rate.Every(3*time.Second), 5)
+			g.visitors[ip] = l
+		}
+		g.mu.Unlock()
+		if !l.Allow() || !g.demos.Allow() {
+			w.Header().Set("Retry-After", "3")
+			writeError(w, http.StatusTooManyRequests, "lots of demos running; try again in a few seconds")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func safeMethod(m string) bool { return m == "GET" || m == "HEAD" || m == "OPTIONS" }

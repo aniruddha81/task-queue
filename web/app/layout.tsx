@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import LeaderBadge from "./lib/leader";
+import Nav from "./lib/nav";
 import SessionMenu from "./lib/session";
 import "./globals.css";
 
@@ -15,14 +15,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body>
         <header>
           <strong>task-queue</strong>
-          <nav>
-            <Link href="/">Jobs</Link>
-            <Link href="/new/">New job</Link>
-            <Link href="/dead/">Dead letters</Link>
-            <Link href="/queues/">Queues</Link>
-            <Link href="/workers/">Workers</Link>
-            <Link href="/schedules/">Schedules</Link>
-          </nav>
+          <Nav />
           <LeaderBadge />
           <SessionMenu />
         </header>

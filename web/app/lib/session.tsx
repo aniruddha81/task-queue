@@ -2,13 +2,12 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Me, post, usePoll } from "./api";
+import { isPublic, Me, post, usePoll } from "./api";
 
-/** Who is signed in, their account links, and Sign out. Hidden on the login page. */
+/** Who is signed in, their account links, and Sign out. Hidden on public pages. */
 export default function SessionMenu() {
   const router = useRouter();
-  const onLogin = usePathname()?.startsWith("/login");
-  const { data: me } = usePoll<Me>(onLogin ? null : "/v1/auth/me");
+  const { data: me } = usePoll<Me>(isPublic(usePathname()) ? null : "/v1/auth/me");
   if (!me) return null;
   const signOut = () => post("/v1/auth/logout").finally(() => router.push("/login/"));
   return (

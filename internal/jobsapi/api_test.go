@@ -211,3 +211,47 @@ func TestSchedulesHTTP(t *testing.T) {
 		t.Errorf("GET after delete: %d, want 404", code)
 	}
 }
+
+// TestPublicHTTP: the live page's routes work without a token, run only the fixed scenarios,
+// and show only demo jobs.
+func TestPublicHTTP(t *testing.T) {
+	pub, key, _ := ed25519.GenerateKey(nil)
+	srv := httptest.NewServer(newAPI(t, pub))
+	defer srv.Close()
+
+	code, resp := do(t, srv, "POST", "/v1/public/try", "", "", `{"scenario":"freeze"}`)
+	var job queue.Job
+	json.Unmarshal(resp, &job)
+	if code != http.StatusCreated || job.Type != "demo.freeze" || job.TimeoutSeconds != 3 {
+		t.Fatalf("try freeze: %d %s", code, resp)
+	}
+	for _, body := range []string{`{"scenario":"rm -rf"}`, `{"type":"chaos.crash"}`, `not json`} {
+		if code, _ := do(t, srv, "POST", "/v1/public/try", "", "", body); code != http.StatusBadRequest {
+			t.Errorf("try %s: %d, want 400", body, code)
+		}
+	}
+	if code, resp := do(t, srv, "GET", "/v1/public/try/"+job.ID.String(), "", "", ""); code != http.StatusOK ||
+		!strings.Contains(string(resp), `"attempts":[]`) {
+		t.Errorf("get demo job: %d %s", code, resp)
+	}
+	if code, resp := do(t, srv, "GET", "/v1/public/stats", "", "", ""); code != http.StatusOK ||
+		!strings.Contains(string(resp), `"cloud":"azure"`) {
+		t.Errorf("stats: %d %s", code, resp)
+	}
+
+	// A user's own job is not a demo job.
+	tok, _ := authn.Sign(key, authn.Identity{Owner: uuid.NewV7()}, time.Hour)
+	_, resp = do(t, srv, "POST", "/v1/jobs", tok, "mine", `{"queue":"default","type":"chaos.sleep"}`)
+	json.Unmarshal(resp, &job)
+	if code, _ := do(t, srv, "GET", "/v1/public/try/"+job.ID.String(), "", "", ""); code != http.StatusNotFound {
+		t.Errorf("a user's job through the public route: %d, want 404", code)
+	}
+}
+
+func TestScenariosAreValidJobs(t *testing.T) {
+	for name, body := range scenarios {
+		if _, err := parseSubmit(guest, "try:x", []byte(body())); err != nil {
+			t.Errorf("scenario %s: %v", name, err)
+		}
+	}
+}

@@ -7,7 +7,7 @@
 //	POST /v1/jobs/{id}/redrive retry a dead job with a fresh attempt budget
 //	POST /v1/jobs/redrive      redrive every dead job, or one queue's ({"queue": "..."}), up to 1000 a call
 //
-// and the schedule routes in schedules.go.
+// and the schedule routes in schedules.go, and the token-free ones for the live page in public.go.
 package jobsapi
 
 import (
@@ -40,7 +40,7 @@ type api struct {
 	log   *slog.Logger
 }
 
-// New returns the API handler. Every route requires a valid token.
+// New returns the API handler. Every route requires a valid token, except /v1/public/.
 func New(store *queue.Store, auth *authn.Verifier, log *slog.Logger) http.Handler {
 	a := &api{store, auth, log}
 	mux := http.NewServeMux()
@@ -51,6 +51,7 @@ func New(store *queue.Store, auth *authn.Verifier, log *slog.Logger) http.Handle
 	mux.HandleFunc("POST /v1/jobs/{id}/redrive", a.authed(a.redrive))
 	mux.HandleFunc("POST /v1/jobs/redrive", a.authed(a.redriveAll))
 	a.scheduleRoutes(mux)
+	a.publicRoutes(mux)
 	mux.HandleFunc("GET /v1/jobs/{id}/attempts", a.authed(a.attempts))
 	mux.HandleFunc("GET /v1/queues", a.authed(a.queues))
 	// Operational views: system-wide, read-only, for any signed-in user.

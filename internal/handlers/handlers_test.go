@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/mail"
 	"net/textproto"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aniruddha81/task-queue/sdk/go/worker"
 )
@@ -104,5 +107,28 @@ func TestEmailRouting(t *testing.T) {
 	}
 	if err := send("a@real.test"); err == nil || fmt.Sprintf("%T", err) == "worker.permanent" {
 		t.Errorf("real recipient via the dead relay: got %v (%T), want a retryable error", err, err)
+	}
+}
+
+// TestDemoFreeze: both attempts send the transfer with the same effect key, and only the
+// first stalls.
+func TestDemoFreeze(t *testing.T) {
+	var keys []string
+	sinks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+	}))
+	defer sinks.Close()
+	freeze = 200 * time.Millisecond
+	c := Config{Sinks: sinks.URL, Client: sinks.Client()}
+	for attempt, stalls := range map[int]bool{1: true, 2: false} {
+		start := time.Now()
+		err := c.demoFreeze(context.Background(), worker.Job{Attempt: attempt, EffectKey: "k",
+			Payload: []byte(`{"from":"visitor","to":"shop","amount":100}`)})
+		if took := time.Since(start); err != nil || (took >= freeze) != stalls {
+			t.Errorf("attempt %d: err %v after %v, want it to stall: %v", attempt, err, took, stalls)
+		}
+	}
+	if len(keys) != 2 || keys[0] != "k" || keys[1] != "k" {
+		t.Errorf("effect keys sent: %v, want [k k]", keys)
 	}
 }

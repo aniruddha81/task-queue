@@ -7,6 +7,9 @@ import { useEffect, useState } from "react";
 
 export class Unauthorized extends Error {}
 
+/** Pages anyone can see: they never call the signed-in API. */
+export const isPublic = (path: string | null): path is string => !!path && (path.startsWith("/login") || path.startsWith("/live"));
+
 async function call<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -14,9 +17,10 @@ async function call<T>(method: string, path: string, body?: unknown, headers: Re
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (res.status === 401) {
-    // Outside any component there is no router; a full load to the login page is intended.
+    // Outside any component there is no router; a full load is intended. A visitor without an
+    // account lands on the live page, which links to sign in.
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-    window.location.href = "/login/";
+    window.location.href = "/live/";
     throw new Unauthorized();
   }
   const data = res.status === 204 ? null : await res.json();
@@ -77,6 +81,7 @@ export type Attempt = {
   attempt: number;
   node_id: string;
   node_name: string | null;
+  node_cloud: string | null;
   started_at: string;
   finished_at: string | null;
   outcome: string | null;
