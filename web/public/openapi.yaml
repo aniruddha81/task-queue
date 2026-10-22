@@ -444,6 +444,39 @@ paths:
                   job: { $ref: "#/components/schemas/Job" }
                   attempts: { type: array, items: { $ref: "#/components/schemas/Attempt" } }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/public/remind:
+    post:
+      operationId: publicRemind
+      tags: [public]
+      summary: Book a reminder by email; only a confirmation link is sent now
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, label, at]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email }
+                label: { type: string, minLength: 1, maxLength: 80, description: One line }
+                at: { type: string, format: date-time, description: A minute to a week from now }
+                tz: { type: string, description: "IANA time zone for the emails; default UTC" }
+      responses:
+        "201": { description: "{email}: the confirmation link is on its way" }
+        "400": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/public/remind/{token}/confirm:
+    post:
+      operationId: publicConfirmReminder
+      tags: [public]
+      summary: Confirm a booked reminder; it becomes an email.send job at its time
+      security: []
+      parameters: [{ name: token, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "201": { $ref: "#/components/responses/Job" }
+        "404": { $ref: "#/components/responses/Error" }
 
 components:
   securitySchemes:

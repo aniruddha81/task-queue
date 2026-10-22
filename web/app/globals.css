@@ -113,5 +113,12 @@ nav.public { justify-content: flex-end; }
 .use p, .proof-item p { margin: 6px 0 0; color: var(--muted); }
 .proof-item { color: inherit; }
 .proof-item:hover { text-decoration: none; border-color: var(--accent); }
+form.remind { display: grid; gap: 12px; max-width: 520px; }
+form.remind label { display: grid; gap: 4px; }
+form.remind label > span { color: var(--muted); }
+form.remind input { padding: 8px 10px; }
+form.remind .quick { display: flex; flex-wrap: wrap; gap: 8px; }
+form.remind .cta { justify-self: start; border: 0; }
+.cta:disabled { opacity: 0.6; cursor: default; }
 .live-foot { display: flex; flex-wrap: wrap; gap: 16px; padding: 24px 0; border-top: 1px solid var(--line); color: var(--muted); }
 @media (max-width: 600px) { main { padding: 16px; } }

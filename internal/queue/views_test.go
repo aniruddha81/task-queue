@@ -3,6 +3,7 @@ package queue
 import (
 	"errors"
 	"testing"
+	"time"
 	"uuid"
 )
 
@@ -74,5 +75,34 @@ func TestViews(t *testing.T) {
 	l, err := s.Leader(t.Context())
 	if err != nil || l.Held || l.ExpiresAt != nil {
 		t.Errorf("leader before any election = %+v, %v; want not held", l, err)
+	}
+}
+
+func TestReminders(t *testing.T) {
+	s, _ := newStore(t)
+	r := Reminder{Email: "a@example.com", Label: "call mum", RemindAt: time.Now().Add(time.Hour), TZ: "Asia/Kolkata"}
+	var first uuid.UUID
+	for i := range 3 {
+		tok, err := s.BookReminder(t.Context(), r)
+		if err != nil {
+			t.Fatalf("booking %d: %v", i+1, err)
+		}
+		if i == 0 {
+			first = tok
+		}
+	}
+	if _, err := s.BookReminder(t.Context(), r); !errors.Is(err, ErrTooManyReminders) {
+		t.Errorf("a 4th waiting for one address: %v, want ErrTooManyReminders", err)
+	}
+	got, err := s.WaitingReminder(t.Context(), first)
+	if err != nil || got.Label != "call mum" || got.TZ != "Asia/Kolkata" {
+		t.Errorf("waiting reminder = %+v, %v", got, err)
+	}
+	s.ForgetReminder(t.Context(), first)
+	if _, err := s.WaitingReminder(t.Context(), first); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after forgetting: %v, want ErrNotFound", err)
+	}
+	if _, err := s.BookReminder(t.Context(), r); err != nil {
+		t.Errorf("a slot freed by confirming: %v", err)
 	}
 }

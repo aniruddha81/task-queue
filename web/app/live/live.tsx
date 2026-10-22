@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 import { Attempt, Job, post, usePoll } from "../lib/api";
 
 // The public face of the system, for people without an account: what it is doing right now,
-// and a demo they can run themselves (/v1/public/, see internal/jobsapi/public.go).
+// demos they can run themselves, and a real reminder by email (/v1/public/, see
+// internal/jobsapi/public.go).
 
 type Stats = {
   clouds: { cloud: string; workers: number; running: number }[];
@@ -46,6 +47,9 @@ const SCENARIOS: Record<string, Scenario> = {
       "The start time was kept in the database and checked on the database's own clock, so no server with a drifting clock can start it early. If servers restart while it waits, it still runs.",
   },
 };
+
+const REMIND_AFTER =
+  "Your reminder waited as a job in the database, copied across two clouds, until its time came. Then a worker in one of the clouds sent the email. Servers could have crashed or been replaced in between, and it would still have been sent.";
 
 export default function Live() {
   const stats = usePoll<Stats>("/v1/public/stats").data;
@@ -114,6 +118,14 @@ export default function Live() {
         {run && <Timeline key={run.id} id={run.id} scenario={run.scenario} />}
       </section>
 
+      <section id="remind">
+        <h2>Get a real reminder by email</h2>
+        <p className="muted">
+          The same system, doing something useful for you: tell it what to remind you about and when, up to a week ahead.
+        </p>
+        <Remind />
+      </section>
+
       <section>
         <h2>What you can build on it</h2>
         <div className="uses">
@@ -165,11 +177,86 @@ const Proof = ({ n, text, href }: { n: string; text: string; href: string }) => 
   <a className="proof-item" href={href}><div className="big">{n}</div><p>{text}</p></a>
 );
 
-/** Seconds as people say them. */
-const span = (ms: number) => (ms < 1000 ? `${Math.max(ms, 1)} ms` : `${(ms / 1000).toFixed(1)} s`);
+/** A duration as people say it. */
+const span = (ms: number) =>
+  ms < 1000 ? `${Math.max(Math.round(ms), 1)} ms`
+    : ms < 120e3 ? `${(ms / 1000).toFixed(1)} s`
+    : ms < 2 * 3600e3 ? `${Math.round(ms / 60e3)} min`
+    : `${Math.round(ms / 3600e3)} h`;
+/** Time left, counting down. */
+const until = (ms: number) => (ms < 120e3 ? `${Math.max(0, Math.ceil(ms / 1000))} s` : span(ms));
 
-/** One demo job, step by step in plain words, until it is over. */
-function Timeline({ id, scenario }: { id: string; scenario: string }) {
+/** A datetime-local input's value for d. */
+const local = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
+
+/** The reminder form. It only asks for a confirmation link: the reminder exists once that is opened. */
+function Remind() {
+  const [at, setAt] = useState("");
+  const [sent, setSent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const pick = (d: Date) => setAt(local(d));
+  const tomorrow9 = () => {
+    const d = new Date(Date.now() + 24 * 3600e3);
+    d.setHours(9, 0, 0, 0);
+    return d;
+  };
+  const submit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    setBusy(true);
+    setError(null);
+    post<{ email: string }>("/v1/public/remind", {
+      email: f.get("email"),
+      label: f.get("label"),
+      at: new Date(at).toISOString(), // datetime-local is the visitor's own time
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    })
+      .then((r) => setSent(r.email))
+      .catch((e) => setError(e.message))
+      .finally(() => setBusy(false));
+  };
+  if (sent) {
+    return (
+      <div className="timeline">
+        <Step state="wait" title={`Check your inbox at ${sent}`} when={null}>
+          We sent you a link. Open it and press Confirm, and your reminder is booked. Until then nothing is, so no one
+          can send reminders to an address that isn&apos;t theirs. Not there in a minute? Look in spam.
+        </Step>
+      </div>
+    );
+  }
+  return (
+    <form className="remind" onSubmit={submit}>
+      <label>
+        <span>Remind me to</span>
+        <input name="label" required maxLength={80} placeholder="call mum" />
+      </label>
+      <label>
+        <span>When</span>
+        <input type="datetime-local" required value={at} onChange={(e) => setAt(e.target.value)} />
+      </label>
+      <div className="quick">
+        <button type="button" onClick={() => pick(new Date(Date.now() + 2 * 60e3))}>In 2 minutes</button>
+        <button type="button" onClick={() => pick(new Date(Date.now() + 3600e3))}>In an hour</button>
+        <button type="button" onClick={() => pick(tomorrow9())}>Tomorrow at 9:00</button>
+      </div>
+      <label>
+        <span>Your email</span>
+        <input name="email" type="email" required autoComplete="email" placeholder="you@example.com" />
+      </label>
+      <button type="submit" className="cta" disabled={busy}>{busy ? "Sending…" : "Send me a confirmation link"}</button>
+      {error && <p className="error">{error}</p>}
+      <p className="muted">
+        Your address is used only for this reminder, and deleted 30 days after it is sent. Email can&apos;t refuse a
+        duplicate, so after a rare crash you might get it twice. Everything else on this page happens exactly once.
+      </p>
+    </form>
+  );
+}
+
+/** One job, step by step in plain words, until it is over. */
+export function Timeline({ id, scenario }: { id: string; scenario: string }) {
   const { data } = usePoll<{ job: Job; attempts: Attempt[] }>(`/v1/public/try/${id}`);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -193,9 +280,13 @@ function Timeline({ id, scenario }: { id: string; scenario: string }) {
       <Step state="ok" title="Accepted" when={null}>
         Saved to the database, with a copy in the other cloud, before you got an answer. From here, it can’t be lost.
       </Step>
-      {scenario === "later" && (
-        <Step state={attempts.length ? "ok" : "wait"} title={`Booked for ${new Date(runAt).toLocaleTimeString()}`} when={null}>
-          {attempts.length ? "Waited until its start time." : `Waiting… starts in ${Math.max(0, Math.ceil((runAt - now) / 1000))} s.`}
+      {(scenario === "later" || scenario === "remind") && (
+        <Step
+          state={attempts.length ? "ok" : "wait"}
+          title={`Booked for ${new Date(runAt).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`}
+          when={null}
+        >
+          {attempts.length ? "Waited until its start time." : `Waiting… starts in ${until(runAt - now)}.`}
         </Step>
       )}
       {attempts.map((a) => {
@@ -212,7 +303,7 @@ function Timeline({ id, scenario }: { id: string; scenario: string }) {
             {a.outcome === null && (job.type === "demo.freeze" && a.attempt === 1 && now - started > 1500
               ? "Paid… and now it's frozen. It isn't answering."
               : "Working…")}
-            {a.outcome === "succeeded" && `Done in ${span(ended! - started)}.`}
+            {a.outcome === "succeeded" && `${job.type === "email.send" ? "Email sent" : "Done"} in ${span(ended! - started)}.`}
             {a.outcome === "failed" && `Failed: “${a.error}”.${job.state === "dead" ? "" : " It will be tried again."}`}
             {a.outcome === "lease_expired" && "Stopped answering, and its time ran out. The job was handed to a fresh attempt."}
             {a.outcome === "cancelled" && "Cancelled."}
@@ -221,7 +312,7 @@ function Timeline({ id, scenario }: { id: string; scenario: string }) {
       })}
       {job.state === "available" && attempts.length > 0 && (
         <Step state="wait" title="Pausing before the next try" when={null}>
-          Retrying in {Math.max(0, Math.ceil((runAt - now) / 1000))} s, so a struggling service gets a moment to recover.
+          Retrying in {until(runAt - now)}, so a struggling service gets a moment to recover.
         </Step>
       )}
       {job.state === "succeeded" && (
@@ -240,7 +331,7 @@ function Timeline({ id, scenario }: { id: string; scenario: string }) {
           Refused: its turn was over, and another attempt had already finished the job. That’s why the work counts once.
         </Step>
       ))}
-      {finished && !waitingForLate && <p className="explain"><strong>What just happened:</strong> {SCENARIOS[scenario].after}</p>}
+      {finished && !waitingForLate && <p className="explain"><strong>What just happened:</strong> {SCENARIOS[scenario]?.after ?? REMIND_AFTER}</p>}
     </div>
   );
 }

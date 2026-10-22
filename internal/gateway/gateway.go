@@ -59,6 +59,8 @@ func New(cfg Config) http.Handler {
 	mux.Handle("/v1/", g.authed(g.jobs)) // everything under /v1 except /v1/auth/ and /v1/public/
 	mux.Handle("GET /v1/public/", g.jobs)
 	mux.Handle("POST /v1/public/try", g.demo(g.jobs))
+	mux.Handle("POST /v1/public/remind", g.demo(g.jobs))  // book: emails a confirmation link
+	mux.Handle("POST /v1/public/remind/", g.demo(g.jobs)) // confirm
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" && r.Method != "HEAD" {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -131,6 +133,8 @@ func (g *gateway) limiter(owner uuid.UUID) *rate.Limiter {
 
 // demo admits a visitor's demo job within a budget for their address and one for everyone:
 // each takes a worker slot, a frozen payment for 10 s, so all of them together are capped.
+// It also tells jobs the site's name for links in emails: the name the visitor used if it is
+// one of the dashboard's origins, else the last (the custom domain), never the client's word.
 func (g *gateway) demo(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr) // Traffic Manager is DNS only: this is the client
@@ -150,6 +154,13 @@ func (g *gateway) demo(next http.Handler) http.Handler {
 			writeError(w, http.StatusTooManyRequests, "lots of demos running; try again in a few seconds")
 			return
 		}
+		origin := "" // none configured: jobs refuses to email links
+		if o := "https://" + r.Host; slices.Contains(g.cfg.Origins, o) {
+			origin = o
+		} else if len(g.cfg.Origins) > 0 {
+			origin = g.cfg.Origins[len(g.cfg.Origins)-1]
+		}
+		r.Header.Set("X-Public-Origin", origin)
 		next.ServeHTTP(w, r)
 	})
 }

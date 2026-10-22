@@ -22,6 +22,7 @@ type seen struct {
 	calls         int
 	authorization string
 	cookie        string
+	origin        string // X-Public-Origin
 }
 
 func setup(t *testing.T) (*httptest.Server, *seen, ed25519.PrivateKey) {
@@ -30,6 +31,7 @@ func setup(t *testing.T) (*httptest.Server, *seen, ed25519.PrivateKey) {
 	jobs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.calls++
 		got.authorization, got.cookie = r.Header.Get("Authorization"), r.Header.Get("Cookie")
+		got.origin = r.Header.Get("X-Public-Origin")
 		io.Copy(io.Discard, r.Body)
 	}))
 	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -163,5 +165,24 @@ func TestGatewayPublic(t *testing.T) {
 	}
 	if codes[200] != 5 || codes[http.StatusTooManyRequests] != 1 {
 		t.Errorf("6 demos from one address: %v, want 5 started and 1 refused", codes)
+	}
+}
+
+// TestGatewayPublicOrigin: links in reminder emails name the site from the gateway's own list,
+// whatever Host or X-Public-Origin the client sends.
+func TestGatewayPublicOrigin(t *testing.T) {
+	gw, got, _ := setup(t)
+	for host, want := range map[string]string{"other.example": "https://other.example", "evil.example": origin} {
+		req, _ := http.NewRequest("POST", gw.URL+"/v1/public/remind", strings.NewReader("{}"))
+		req.Host = host
+		req.Header.Set("X-Public-Origin", "https://evil.example")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got.origin != want {
+			t.Errorf("Host %s: jobs was told %q, want %q", host, got.origin, want)
+		}
 	}
 }

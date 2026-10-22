@@ -21,7 +21,7 @@ const TYPES: Record<string, Template> = {
   },
   "report.daily": { help: "Records one daily digest. No payload needed.", payload: () => ({}) },
   "email.send": {
-    help: "Sends a plain-text email (to Mailpit) with this subject and body. At least once: SMTP can't refuse a duplicate.",
+    help: "Sends a plain-text email with this subject and body: to Mailpit for example.com addresses, otherwise for real. At least once: SMTP can't refuse a duplicate.",
     payload: () => ({ to: "you@example.com", subject: "Hello", body: "Hi,\n\nThis email was sent by a task-queue job.\n" }),
   },
   "chaos.fail": { help: "Fails with probability p, so you can watch retries and dead letters.", payload: () => ({ p: 0.5 }) },

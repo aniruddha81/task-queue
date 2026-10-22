@@ -255,3 +255,91 @@ func TestScenariosAreValidJobs(t *testing.T) {
 		}
 	}
 }
+
+func TestParseReminder(t *testing.T) {
+	now := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+	for body, wantErr := range map[string]string{
+		`{"email":"A@Example.com","label":" call mum ","at":"` + at(time.Hour) + `","tz":"Asia/Kolkata"}`:  "",
+		`{"email":"a@example.com","label":"x","at":"` + at(time.Hour) + `","tz":"Mars/Base"}`:              "", // UTC
+		`{"email":"Bob <a@example.com>","label":"x","at":"` + at(time.Hour) + `"}`:                         "email address",
+		`{"email":"a@example.com\r\nBcc: b@example.com","label":"x","at":"` + at(time.Hour) + `"}`:         "email address",
+		`{"email":"nope","label":"x","at":"` + at(time.Hour) + `"}`:                                        "email address",
+		`{"email":"a@example.com","label":"","at":"` + at(time.Hour) + `"}`:                                "1 to 80",
+		`{"email":"a@example.com","label":"a\nb","at":"` + at(time.Hour) + `"}`:                            "1 to 80",
+		`{"email":"a@example.com","label":"` + strings.Repeat("x", 81) + `","at":"` + at(time.Hour) + `"}`: "1 to 80",
+		`{"email":"a@example.com","label":"x","at":"` + at(30*time.Second) + `"}`:                          "between a minute and a week",
+		`{"email":"a@example.com","label":"x","at":"` + at(8*24*time.Hour) + `"}`:                          "between a minute and a week",
+		`{"email":"a@example.com","label":"x","at":"` + at(time.Hour) + `","body":"spam"}`:                 "want {",
+	} {
+		r, err := parseReminder([]byte(body), now)
+		if wantErr == "" {
+			if err != nil || r.Email != strings.ToLower(r.Email) || r.Label != strings.TrimSpace(r.Label) || (r.TZ != "Asia/Kolkata" && r.TZ != "UTC") {
+				t.Errorf("%s: %+v, %v", body, r, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("%s: err %v, want it to contain %q", body, err, wantErr)
+		}
+	}
+}
+
+// TestRemindHTTP: booking emails a link and nothing else; the link's token confirms the reminder
+// into one job at its time, however often it is used; and the public view hides the address.
+func TestRemindHTTP(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	pool := pgtest.Migrated(t, "jobs")
+	srv := httptest.NewServer(New(queue.NewStore(pool), authn.NewVerifier(pub), slog.New(slog.DiscardHandler)))
+	defer srv.Close()
+	post := func(path, origin, body string) (int, []byte) {
+		req, _ := http.NewRequest("POST", srv.URL+path, strings.NewReader(body))
+		req.Header.Set("X-Public-Origin", origin)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+	at := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	booking := `{"email":"you@example.com","label":"water the plants","at":"` + at.Format(time.RFC3339) + `","tz":"Asia/Kolkata"}`
+	if code, _ := post("/v1/public/remind", "", booking); code != http.StatusInternalServerError {
+		t.Errorf("without the gateway's origin: %d, want 500", code)
+	}
+	code, resp := post("/v1/public/remind", "https://tq.example", booking)
+	if code != http.StatusCreated || strings.Contains(string(resp), "/live/reminder/") {
+		t.Fatalf("book: %d %s (the token must not be in the response)", code, resp)
+	}
+
+	var body string
+	pool.QueryRow(t.Context(), `SELECT payload->>'body' FROM jobs WHERE idempotency_key LIKE 'confirm:%'`).Scan(&body)
+	_, link, ok := strings.Cut(body, "https://tq.example/live/reminder/?t=")
+	if !ok || strings.Contains(body, "water the plants") {
+		t.Fatalf("confirmation email %q: want a link, and none of the visitor's text", body)
+	}
+	token := strings.Fields(link)[0]
+
+	var first queue.Job
+	for i := range 2 {
+		code, resp := post("/v1/public/remind/"+token+"/confirm", "https://tq.example", "")
+		var job queue.Job
+		json.Unmarshal(resp, &job)
+		if i == 0 {
+			first = job
+			if code != http.StatusCreated || job.Type != "email.send" || !job.RunAt.Equal(at) || strings.Contains(string(resp), "you@example.com") {
+				t.Fatalf("confirm: %d %s, want an email.send job at %v, without the address", code, resp, at)
+			}
+		} else if code != http.StatusNotFound {
+			t.Errorf("confirming again: %d %s, want 404 (the link is used)", code, resp)
+		}
+	}
+	if code, _ := post("/v1/public/remind/"+uuid.NewV4().String()+"/confirm", "https://tq.example", ""); code != http.StatusNotFound {
+		t.Errorf("an unknown token: %d, want 404", code)
+	}
+	code, resp = do(t, srv, "GET", "/v1/public/try/"+first.ID.String(), "", "", "")
+	if code != http.StatusOK || strings.Contains(string(resp), "you@example.com") {
+		t.Errorf("public view of the reminder: %d %s, want it without the address", code, resp)
+	}
+}

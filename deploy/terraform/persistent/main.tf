@@ -323,8 +323,8 @@ resource "aws_iam_role_policy_attachment" "budget_action" {
 
 # ---------- Email: SES sends email.send jobs to real recipients ----------
 # The domain's DNS lives outside Terraform: add `mail_dns_records` there by hand, once. Until
-# they verify, and while the account is in the SES sandbox, SES accepts only verified
-# recipients, and the worker fails other jobs for good on SES's 554.
+# they verify, SES refuses to send, and the worker fails the job for good on SES's 554. The
+# account's production access (out of the sandbox, granted Oct 2026) was requested by hand, once.
 
 resource "aws_sesv2_email_identity" "mail" {
   email_identity = local.mail_domain # Easy DKIM: three CNAMEs, SES rotates the keys
@@ -347,7 +347,7 @@ resource "aws_iam_user_policy" "ses_smtp" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect    = "Allow", Action = "ses:SendRawEmail", Resource = "*" # sandbox recipients are identities too
+      Effect    = "Allow", Action = "ses:SendRawEmail", Resource = "*" # any recipient; the condition pins the sender
       Condition = { StringEquals = { "ses:FromAddress" = var.mail_address } }
     }]
   })

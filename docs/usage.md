@@ -301,7 +301,7 @@ The bundled worker (`cmd/worker`) handles these. Field names in payloads are cas
 | `ledger.transfer` | `{"from":"alice","to":"bob","amount":500}` | Moves `amount` between two accounts in the sinks ledger | Exactly once |
 | `webhook.deliver` | `{"url":"https://ops-a:8090/webhook","body":{...}}` | POSTs `body` to `url` with an `Idempotency-Key` header | Exactly once, if the receiver checks the key |
 | `report.daily` | none | Records one daily digest | Exactly once |
-| `email.send` | `{"to":"a@example.com","subject":"Hi","body":"Hello!"}` | Sends a plain-text UTF-8 email from `Task Queue <jobs@aniruddha81.tech>` through Amazon SES. Addresses at `example.com` go to Mailpit instead. While SES is in its sandbox, only verified recipients get mail; anyone else fails the job permanently. `body` is optional; without it the email says which job sent it. A line break in `to` or `subject` is refused | **At least once**: SMTP can't refuse a duplicate |
+| `email.send` | `{"to":"a@example.com","subject":"Hi","body":"Hello!"}` | Sends a plain-text UTF-8 email from `Task Queue <jobs@aniruddha81.tech>` through Amazon SES. Addresses at `example.com` go to Mailpit instead. The SES account has production access (since Oct 2026), so any address gets mail; one SES refuses (a 5xx, such as an address on its suppression list) fails the job permanently. `body` is optional; without it the email says which job sent it. A line break in `to` or `subject` is refused | **At least once**: SMTP can't refuse a duplicate |
 | `chaos.sleep` | `{"ms":500}` | Sleeps, then succeeds | |
 | `chaos.fail` | `{"p":0.5}` | Fails with probability `p`, to show retries | |
 | `chaos.overrun` | `{"ms":45000}` | Ignores its deadline, so its late result is fenced | |
@@ -402,9 +402,37 @@ Open https://tq.aniruddha81.tech and sign in. It refreshes every 2 seconds.
 | **Account** | Your email and role; change your password; create and revoke API keys |
 | **Users** (admins only) | Every user; add a user or an admin; delete a user |
 | Header | The current leader scheduler and its epoch; who you're signed in as; Sign out |
-| **Live** (`/live/`, public) | For visitors without an account, and where a signed-out visitor lands: workers online per cloud, the last 24 hours (jobs finished, jobs that recovered after a failure, late results fenced), the leader's epoch, and four demos anyone can run and watch step by step: a payment, a payment whose server freezes, a service that fails half the time, and a job booked 20 s ahead |
+| **Live** (`/live/`, public) | For visitors without an account, and where a signed-out visitor lands: workers online per cloud, the last 24 hours (jobs finished, jobs that recovered after a failure, late results fenced), the leader's epoch, four demos anyone can run and watch step by step (a payment, a payment whose server freezes, a service that fails half the time, and a job booked 20 s ahead), and a real reminder by email ([below](#reminders-from-the-live-page)) |
 
 The Jobs page shows 100 jobs at a time, newest first; **Older →** and **← Newer** page through the rest.
+
+### Reminders from the live page
+
+Anyone can ask the live page to email them a reminder, up to a week ahead. It is the system doing something useful in public, so it is built not to be usable for spam:
+
+```mermaid
+sequenceDiagram
+  participant V as Visitor
+  participant J as jobs
+  participant W as worker
+  participant M as Their inbox
+  V->>J: POST /v1/public/remind {email, label, at, tz}
+  J->>J: store it in reminders (a random token)
+  J->>W: email.send job "confirm:<token>"
+  W->>M: "Confirm your reminder" with a link, and no text from the visitor
+  V->>J: opens the link, presses Confirm
+  J->>J: email.send job "remind:<token>" at its time, then delete the row
+  W->>M: at the time: "Reminder: <label>"
+```
+
+- **Only the confirmation link goes to an unproven address**, and it carries no text from the visitor. The visitor's words reach an address only after someone with access to it confirms.
+- **Limits.** An address gets at most 3 reminders waiting for confirmation, and everyone together 300 (unconfirmed ones are deleted after a day). Booking and confirming share the demo's rate limits at the gateway. Labels are 1 to 80 characters on one line.
+- **Confirming twice makes one job.** The job's ID is chosen at booking and its Idempotency-Key is `remind:<token>`. Confirming takes a button press on the page, not just opening the link, because mail scanners open links on their own.
+- **Addresses aren't kept.** The `reminders` row is deleted when confirmed or after a day. The job keeps the address until [retention](#retention) deletes it, 30 days after it is sent. The public view of a job (`/v1/public/try/{id}`) never shows its payload, or an email job's errors.
+- **The links name the site from the gateway's own configuration.** The gateway sends the visitor's site name to `jobs` in `X-Public-Origin`, but only one of its `PUBLIC_ORIGIN`s, never what the client sent.
+- **At least once.** It is plain email, so a crash just after sending can send it twice; the email says so.
+
+Locally, use an `@example.com` address: both emails land in Mailpit at http://localhost:8025.
 
 ### Grafana, Prometheus and Mailpit
 
@@ -575,7 +603,9 @@ All routes go through the gateway and need a token, except login, logout, the AP
 | `GET` | `/v1/leader` | The leader scheduler: `{holder, epoch, expires_at, held}` |
 | `GET` | `/v1/public/stats` | No token: `{clouds: [{cloud, workers, running}], epoch, leader, day: {succeeded, recovered, fenced}}`, cached 5 s |
 | `POST` | `/v1/public/try` | No token: `{"scenario": "pay" \| "freeze" \| "flaky" \| "later"}` runs that fixed demo job → the job |
-| `GET` | `/v1/public/try/{id}` | No token: a demo job and its attempts, `{job, attempts}` |
+| `GET` | `/v1/public/try/{id}` | No token: a demo job and its attempts, `{job, attempts}`, without its payload |
+| `POST` | `/v1/public/remind` | No token: `{email, label, at, tz}` books a reminder and emails a confirmation link → `{email}` |
+| `POST` | `/v1/public/remind/{token}/confirm` | No token: the reminder becomes an `email.send` job at its time → the job; `404` once used or after a day |
 | `GET` | `/.well-known/jwks.json` | Public keys that verify tokens |
 
 | Status | Meaning |
